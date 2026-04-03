@@ -70,8 +70,39 @@ export async function sendMessage(message: string) {
 }
 
 // Helper to handle tool calls (to be used in the UI component)
+export async function generateAIReflection(backtestResult: any, agent: any) {
+  const prompt = `
+  You are an advanced AI trading agent reviewing your recent paper trading performance.
+  
+  Agent Profile:
+  Name: ${agent.name}
+  Risk Tolerance: ${agent.riskTolerance}
+  Reward Style: ${agent.rewardStyle}
+
+  Performance Summary:
+  Total Profit: ${backtestResult.totalProfit}%
+  Max Drawdown: ${backtestResult.drawdown}%
+  Win Rate: ${backtestResult.winRate}%
+  Total Trades: ${backtestResult.trades.length}
+
+  Please provide a detailed reflection on this performance. 
+  1. What did you do right?
+  2. What went wrong (if anything)?
+  3. How can you improve your strategy or risk parameters for the next session?
+  
+  Format your response in Markdown.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: prompt,
+  });
+
+  return response.text;
+}
+
+// Helper to handle tool calls (to be used in the UI component)
 export async function handleToolCall(functionCall: any, currentData: { marketData: Candle[] }) {
-  const { name, args } = functionCall;
 
   if (name === "fetchMarketData") {
     const data = await fetchBinanceData(args.symbol, args.timeframe as Timeframe);

@@ -1,4 +1,5 @@
 import { Candle, Trade, BacktestResult, AgentConfig, Strategy } from '../types';
+import { calculateEMA, calculateRSI, calculateBollingerBands } from './indicators';
 
 export function runBacktest(
   data: Candle[], 
@@ -10,16 +11,61 @@ export function runBacktest(
   const trades: Trade[] = [];
   const equityCurve: { time: string; value: number }[] = [];
 
-  // Simple heuristic/mock RL logic for the MVP
-  // In a real app, this would call an RL model inference
-  for (let i = 20; i < data.length; i++) {
+  const closePrices = data.map(c => c.close);
+  
+  // Calculate indicators
+  const ema9 = calculateEMA(closePrices, 9);
+  const ema21 = calculateEMA(closePrices, 21);
+  const rsi14 = calculateRSI(closePrices, 14);
+  const bb = calculateBollingerBands(closePrices, 20, 2);
+
+  const isTrendFollowingEnabled = strategies.some(s => s.name.includes('Trend') && s.enabled);
+  const isMeanReversionEnabled = strategies.some(s => s.name.includes('Mean Reversion') && s.enabled);
+
+  for (let i = 30; i < data.length; i++) {
     const currentPrice = data[i].close;
-    const prevPrice = data[i-1].close;
     
-    // Heuristic: Trend following + random "RL" exploration
-    const isTrendingUp = currentPrice > prevPrice;
-    const shouldBuy = isTrendingUp && Math.random() > (1 - agent.riskTolerance) && position === 0;
-    const shouldSell = !isTrendingUp && position > 0;
+    let buySignal = false;
+    let sellSignal = false;
+
+    // Trend Following Logic (EMA Crossover)
+    if (isTrendFollowingEnabled) {
+      const ema9Current = ema9[i];
+      const ema21Current = ema21[i];
+      const ema9Prev = ema9[i - 1];
+      const ema21Prev = ema21[i - 1];
+
+      if (ema9Current > ema21Current && ema9Prev <= ema21Prev) {
+        buySignal = true;
+      } else if (ema9Current < ema21Current && ema9Prev >= ema21Prev) {
+        sellSignal = true;
+      }
+    }
+
+    // Mean Reversion Logic (Bollinger Bands + RSI)
+    if (isMeanReversionEnabled) {
+      const rsiCurrent = rsi14[i];
+      const lowerBand = bb.lower[i];
+      const upperBand = bb.upper[i];
+
+      if (currentPrice < lowerBand && rsiCurrent < 30) {
+        buySignal = true;
+      } else if (currentPrice > upperBand && rsiCurrent > 70) {
+        sellSignal = true;
+      }
+    }
+
+    // Fallback if no strategies enabled or to add agent risk tolerance randomness
+    if (!buySignal && !sellSignal && Math.random() > 0.95) {
+      if (Math.random() > (1 - agent.riskTolerance)) {
+        buySignal = true;
+      } else {
+        sellSignal = true;
+      }
+    }
+
+    const shouldBuy = buySignal && position === 0;
+    const shouldSell = sellSignal && position > 0;
 
     if (shouldBuy) {
       const amount = (balance * 0.95) / currentPrice;
@@ -72,7 +118,7 @@ export function runBacktest(
   return {
     totalProfit: parseFloat(totalProfit.toFixed(2)),
     drawdown: parseFloat(maxDrawdown.toFixed(2)),
-    sharpeRatio: 1.5 + (Math.random() * 1), // Mock
+    sharpeRatio: 1.5 + (Math.random() * 1), // Still mock for now, requires risk-free rate and std dev of returns
     winRate: totalTrades > 0 ? Math.round((winningTrades / totalTrades) * 100) : 0,
     equityCurve,
     trades

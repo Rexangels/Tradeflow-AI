@@ -7,7 +7,7 @@ import {
   TrendingUp, TrendingDown, Activity, Settings, Play, Database, 
   BarChart3, LayoutDashboard, History, Zap, Shield, Info,
   ChevronRight, Search, Filter, Download, Share2, Plus, Trash2,
-  MessageSquare, Send, X, Pause, RotateCcw
+  MessageSquare, Send, X, Pause, RotateCcw, Brain
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -41,7 +41,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { collection, addDoc, query, where, onSnapshot, orderBy, limit, setDoc, doc } from 'firebase/firestore';
 
-import { sendMessage, handleToolCall, chat } from './services/geminiService';
+import { sendMessage, handleToolCall, chat, generateAIReflection } from './services/geminiService';
 
 function AppContent() {
   const { user, loading, signIn, logout } = useAuth();
@@ -321,6 +321,17 @@ function AppContent() {
     }, 1500);
   };
 
+  const runPaperTrade = async () => {
+    setIsBacktesting(true);
+    setPlaybackIndex(0);
+    setTimeout(async () => {
+      const result = executeBacktest(marketData, activeAgent, strategies.filter(s => s.enabled));
+      setBacktestResult(result);
+      setIsBacktesting(false);
+      setActiveTab('paper');
+    }, 1500);
+  };
+
   if (loading) {
     return (
       <div className="h-screen w-screen bg-slate-950 flex items-center justify-center">
@@ -391,6 +402,12 @@ function AppContent() {
             label="Live Trading" 
             active={activeTab === 'live'} 
             onClick={() => setActiveTab('live')} 
+          />
+          <NavItem 
+            icon={<Activity className="w-5 h-5" />} 
+            label="Paper Trading" 
+            active={activeTab === 'paper'} 
+            onClick={() => setActiveTab('paper')} 
           />
         </nav>
 
@@ -1017,6 +1034,77 @@ function AppContent() {
                     </p>
                   </div>
                 </div>
+              </motion.div>
+            )}
+            {activeTab === 'paper' && (
+              <motion.div 
+                key="paper"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="space-y-8"
+              >
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-bold">Paper Trading Simulation</h2>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        runPaperTrade();
+                      }}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                    >
+                      Start Session
+                    </button>
+                  </div>
+                </div>
+
+                {backtestResult && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                      <h3 className="text-lg font-semibold mb-6">Session Performance</h3>
+                      <div className="h-[400px] w-full">
+                        <CandlestickChart 
+                          data={marketData} 
+                          trades={backtestResult.trades} 
+                          height={400} 
+                        />
+                      </div>
+                    </div>
+                    <div className="lg:col-span-1 space-y-6">
+                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                        <h3 className="text-lg font-semibold mb-4">AI Reflection</h3>
+                        <p className="text-sm text-slate-400 mb-4">
+                          Ask the AI to analyze its performance in this session, identify mistakes, and store the learnings in its memory layer.
+                        </p>
+                        <button 
+                          onClick={async () => {
+                            setIsChatLoading(true);
+                            try {
+                              const reflection = await generateAIReflection(backtestResult, activeAgent);
+                              if (user) {
+                                await addDoc(collection(db, 'agent_memories'), {
+                                  userId: user.uid,
+                                  agentId: activeAgent.id,
+                                  reflection,
+                                  createdAt: new Date().toISOString()
+                                });
+                              }
+                              setChatMessages(prev => [...prev, { role: 'ai', content: `**Reflection Complete:**\n\n${reflection}` }]);
+                              setShowCommandCenter(true);
+                            } catch (error) {
+                              console.error(error);
+                            } finally {
+                              setIsChatLoading(false);
+                            }
+                          }}
+                          className="w-full bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                        >
+                          <Brain className="w-5 h-5" />
+                          Generate Reflection
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
