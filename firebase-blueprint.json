@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Agent": {
+      "title": "Agent",
+      "description": "Configured trading agent",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["pretrained", "custom"] },
+        "rewardStyle": { "type": "string", "enum": ["aggressive", "conservative", "balanced"] },
+        "riskTolerance": { "type": "number" },
+        "holdingBehavior": { "type": "string", "enum": ["short-term", "long-term"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name"]
+    },
+    "Backtest": {
+      "title": "Backtest",
+      "description": "Result of a backtest run",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "agentId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "totalProfit": { "type": "number" },
+        "drawdown": { "type": "number" },
+        "sharpeRatio": { "type": "number" },
+        "winRate": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "agentId"]
+    },
+    "BrokerKey": {
+      "title": "BrokerKey",
+      "description": "Encrypted broker API keys",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "broker": { "type": "string", "enum": ["Binance", "Alpaca", "IBKR"] },
+        "apiKey": { "type": "string" },
+        "apiSecret": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "broker", "apiKey"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/agents/{agentId}": {
+      "schema": "Agent",
+      "description": "Trading agent configurations"
+    },
+    "/backtests/{backtestId}": {
+      "schema": "Backtest",
+      "description": "Backtest result history"
+    },
+    "/broker_keys/{keyId}": {
+      "schema": "BrokerKey",
+      "description": "Secure storage for broker credentials"
+    }
+  }
+}

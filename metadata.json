@@ -1,0 +1,5 @@
+{
+  "name": "TradeFlow AI",
+  "description": "A complete trading workflow platform for RL-based agents. Data fetching, backtesting, and strategy evaluation in one place.",
+  "requestFramePermissions": []
+}
