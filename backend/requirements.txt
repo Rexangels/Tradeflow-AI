@@ -1,2 +1,4 @@
 Django>=5.2,<5.3
 djangorestframework>=3.16,<3.17
+oandapyV20==0.7.2
+python-dotenv>=1.0.0

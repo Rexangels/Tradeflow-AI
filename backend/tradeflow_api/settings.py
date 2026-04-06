@@ -129,3 +129,9 @@ BINANCE_API_BASE_URL = os.getenv("BINANCE_API_BASE_URL", "https://api.binance.co
 MARKET_DATA_CACHE_TTL_SECONDS = int(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", "60"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MARKET_DATA_FALLBACK_MODE = os.getenv("MARKET_DATA_FALLBACK_MODE", "synthetic" if DEBUG else "strict")
+
+# Trading broker configuration (OANDA, Binance, Alpaca, etc.)
+TRADING_BROKER = os.getenv("TRADING_BROKER", "oanda")
+OANDA_ACCESS_TOKEN = os.getenv("OANDA_ACCESS_TOKEN", "")
+OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
+OANDA_ENVIRONMENT = os.getenv("OANDA_ENVIRONMENT", "practice")
