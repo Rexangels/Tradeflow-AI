@@ -220,6 +220,29 @@ class AlpacaClient:
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         return self._request("DELETE", f"/v2/orders/{order_id}")
 
+    def cancel_orders_for_symbol(self, symbol: str) -> list[str]:
+        """
+        Cancel all open orders for a specific symbol.
+        Returns list of cancelled order IDs.
+        Alpaca's GET /v2/orders supports a `symbols` filter.
+        """
+        fmt = self._format_symbol(symbol)
+        cancelled = []
+        try:
+            orders = self.get_orders(status="open", symbols=fmt, limit=50, nested=False)
+            for order in orders:
+                oid = order.get("id") or order.get("order_id")
+                if not oid:
+                    continue
+                try:
+                    self._request("DELETE", f"/v2/orders/{oid}")
+                    cancelled.append(oid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return cancelled
+
     def cancel_all_orders(self) -> list[dict[str, Any]]:
         return self._request("DELETE", "/v2/orders")
 

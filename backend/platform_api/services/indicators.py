@@ -130,10 +130,26 @@ def analyze_forex_confluence(
         candles = get_candles(norm_sym, timeframe=timeframe, limit=120)
 
     closes = [float(c["close"]) for c in candles]
-    curr_price = closes[-1]
+    live_px = latest_price(norm_sym)
+    curr_price = float(live_px) if live_px else closes[-1]
+    is_crypto = any(c in norm_sym for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB", "XAU", "XAG")) or curr_price > 500
     is_jpy = "JPY" in norm_sym
-    pip_multiplier = 100.0 if is_jpy else 10000.0
-    decimals = 3 if is_jpy else 5
+
+    if is_crypto:
+        pip_multiplier = 1.0
+        decimals = 2 if curr_price >= 10.0 else 4
+        default_atr = curr_price * 0.015
+        min_sl_dist = curr_price * 0.005
+    elif is_jpy:
+        pip_multiplier = 100.0
+        decimals = 3
+        default_atr = 0.15
+        min_sl_dist = 0.10
+    else:
+        pip_multiplier = 10000.0
+        decimals = 5
+        default_atr = 0.0015
+        min_sl_dist = 0.0010
 
     # Technical Indicators
     rsi_vals = calculate_rsi(closes, period=14)
@@ -153,7 +169,7 @@ def analyze_forex_confluence(
     curr_hist = round(hist[-1], decimals + 1)
 
     atr_vals = calculate_atr(candles, period=14)
-    curr_atr = atr_vals[-1] if atr_vals and not np.isnan(atr_vals[-1]) else (0.0015 if not is_jpy else 0.15)
+    curr_atr = atr_vals[-1] if atr_vals and not np.isnan(atr_vals[-1]) else default_atr
     atr_pips = round(curr_atr * pip_multiplier, 1)
 
     _, bb_upper, bb_lower = calculate_bollinger_bands(closes, period=20, multiplier=2.0)
@@ -219,14 +235,14 @@ def analyze_forex_confluence(
         direction = "long"
         side = "buy"
         # Dynamic Stop Loss & Take Profit (1.5x ATR SL, 3.0x ATR TP = 2.0R ratio)
-        sl_distance = max(curr_atr * 1.5, 0.0010 if not is_jpy else 0.10)
+        sl_distance = max(curr_atr * 1.5, min_sl_dist)
         tp_distance = sl_distance * 2.0
         stop_loss = round(curr_price - sl_distance, decimals)
         take_profit = round(curr_price + tp_distance, decimals)
     elif short_points >= long_points + 2 and confidence >= 0.55:
         direction = "short"
         side = "sell"
-        sl_distance = max(curr_atr * 1.5, 0.0010 if not is_jpy else 0.10)
+        sl_distance = max(curr_atr * 1.5, min_sl_dist)
         tp_distance = sl_distance * 2.0
         stop_loss = round(curr_price + sl_distance, decimals)
         take_profit = round(curr_price - tp_distance, decimals)

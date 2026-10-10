@@ -19,15 +19,50 @@ class OrderExecutionService:
     """
 
     @classmethod
+    def get_active_broker(cls) -> str:
+        from platform_api.models import RiskRule
+        import os
+        rule = RiskRule.objects.filter(key="primary_broker").first()
+        if rule and rule.value:
+            if isinstance(rule.value, dict) and "value" in rule.value:
+                return str(rule.value["value"]).lower()
+            return str(rule.value).lower()
+        return os.getenv("BROKER_PRIMARY", "alpaca").lower()
+
+    @classmethod
+    def set_active_broker(cls, broker: str) -> str:
+        from platform_api.models import RiskRule
+        broker_clean = broker.lower().strip()
+        if broker_clean not in ("alpaca", "mt5"):
+            broker_clean = "alpaca"
+        rule, _ = RiskRule.objects.get_or_create(key="primary_broker")
+        rule.value = {"value": broker_clean}
+        rule.save()
+        return broker_clean
+
+    @classmethod
     def get_account_overview(cls) -> dict[str, Any]:
         """
-        Fetches current Alpaca account metrics and active mode.
+        Fetches active broker metrics (Alpaca or MT5 Exness Demo/Cent).
         """
+        active_broker = cls.get_active_broker()
+
+        if active_broker == "mt5":
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            overview = mt5_client.get_account_overview()
+            overview["active_broker"] = "mt5"
+            return overview
+
+        # Default: Alpaca
         client = get_alpaca_client()
         acc = client.get_account()
         mode = client.mode
 
         return {
+            "broker": "alpaca",
+            "active_broker": "alpaca",
+            "brokerName": f"Alpaca {mode.capitalize()} Trading",
             "mode": mode,
             "account_id": acc.get("id"),
             "status": acc.get("status"),
@@ -45,8 +80,13 @@ class OrderExecutionService:
     @classmethod
     def get_open_positions(cls) -> list[dict[str, Any]]:
         """
-        Fetches all active open positions from Alpaca, formatted with live P&L.
+        Fetches all active open positions from the active broker, formatted with live P&L.
         """
+        active_broker = cls.get_active_broker()
+        if active_broker == "mt5":
+            from .mt5_client import get_mt5_client
+            return get_mt5_client().get_open_positions()
+
         client = get_alpaca_client()
         raw_positions = client.get_positions()
         formatted = []
@@ -123,9 +163,74 @@ class OrderExecutionService:
         else:
             assessment = {"approved": True, "reason": "Bypassed risk checks"}
 
+        # 2. Submit to Active Broker
+        if cls.get_active_broker() == "mt5":
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            is_crypto = any(c in norm_sym for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB"))
+            if is_crypto:
+                vol = round(qty, 2)
+                logged_qty = vol
+            elif qty <= 10.0:
+                vol = round(qty, 2)
+                logged_qty = vol * 100000.0
+            else:
+                vol = round(qty / 100000.0, 2)
+                logged_qty = qty
+
+            if vol < 0.01:
+                vol = 0.01
+            mt5_res = mt5_client.execute_order(
+                symbol=disp_sym,
+                side=side,
+                volume=vol,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                comment=f"TF {agent.name if agent else 'AI'}"[:31],
+            )
+            if not mt5_res.get("success"):
+                return {
+                    "success": False,
+                    "broker": "MetaTrader 5 (Exness Demo)",
+                    "error": mt5_res.get("error", "MT5 execution failed"),
+                    "risk_assessment": assessment,
+                }
+            ticket = mt5_res.get("ticket")
+            fill_price = float(mt5_res.get("entry_price") or curr_price)
+            trade_log = TradeLog.objects.create(
+                alpaca_order_id=f"MT5-{ticket}",
+                agent=agent,
+                symbol=disp_sym,
+                side=side.lower(),
+                qty=logged_qty,
+                entry_price=fill_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                status="open",
+                ai_reasoning=ai_reasoning or assessment.get("reason", ""),
+                mode="mt5_demo",
+            )
+            return {
+                "success": True,
+                "broker": "MetaTrader 5 (Exness Demo)",
+                "order_id": f"MT5-{ticket}",
+                "ticket": ticket,
+                "volume": vol,
+                "trade_log_id": str(trade_log.id),
+                "symbol": disp_sym,
+                "side": side,
+                "qty": vol * 100000.0,
+                "entry_price": fill_price,
+                "status": "filled",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "risk_assessment": assessment,
+                "mt5_response": mt5_res,
+            }
+
         client = get_alpaca_client()
 
-        # 2. Submit to Alpaca
+        # Submit to Alpaca
         try:
             alpaca_response = client.place_order(
                 symbol=disp_sym,
@@ -192,14 +297,76 @@ class OrderExecutionService:
         }
 
     @classmethod
+    def _cancel_orders_for_symbol(cls, symbol: str) -> list[str]:
+        """
+        Cancel all open orders for a given symbol so that shares are freed
+        from 'held_for_orders' before we attempt to close the position.
+        Returns a list of cancelled order IDs.
+        """
+        client = get_alpaca_client()
+        try:
+            return client.cancel_orders_for_symbol(symbol)
+        except Exception:
+            return []
+
+    @classmethod
     def close_position(cls, symbol: str, qty: Optional[float] = None) -> dict[str, Any]:
         """
         Liquidates an open position in Alpaca and updates TradeLog.
+
+        Important: Alpaca returns HTTP 403 with code 40310000
+        ("insufficient qty available") when open orders hold the shares.
+        We must cancel those orders FIRST to free the shares, then close.
         """
-        client = get_alpaca_client()
         disp_sym = format_display_symbol(symbol)
         clean_sym = normalize_symbol(symbol)
 
+        if cls.get_active_broker() == "mt5":
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            positions = mt5_client.get_open_positions()
+            target_ticket = None
+            if str(symbol).startswith("MT5-"):
+                target_ticket = int(str(symbol).replace("MT5-", ""))
+            elif str(symbol).isdigit():
+                target_ticket = int(symbol)
+            else:
+                for p in positions:
+                    pos_sym = p["symbol"].upper()
+                    if clean_sym in pos_sym or pos_sym in clean_sym or pos_sym in (disp_sym, symbol.upper()):
+                        target_ticket = p["ticket"]
+                        break
+            if not target_ticket and positions:
+                target_ticket = positions[0]["ticket"]
+
+            if target_ticket:
+                close_res = mt5_client.close_position(target_ticket)
+                # Update all matching open logs – TradeLog uses only exit_price (no exit_time field)
+                TradeLog.objects.filter(
+                    symbol=disp_sym, status="open"
+                ).update(
+                    status="closed",
+                    exit_price=close_res.get("closed_price") or 0.0,
+                )
+                return close_res
+            return {"success": False, "error": f"No open MT5 position found for {symbol}"}
+
+        client = get_alpaca_client()
+
+        # Step 1 – cancel any trailing-stop / stop-loss / bracket orders that
+        # are holding shares so the DELETE /v2/positions request can proceed.
+        cancelled_orders = cls._cancel_orders_for_symbol(clean_sym)
+        if not cancelled_orders:
+            # Also try the slash-format symbol (e.g. EUR/USD)
+            cancelled_orders = cls._cancel_orders_for_symbol(disp_sym)
+
+        # Give Alpaca a tiny moment to process the cancellations (non-blocking
+        # markets may need this) – use a short sleep only if we cancelled something.
+        if cancelled_orders:
+            import time as _time
+            _time.sleep(0.5)
+
+        # Step 2 – close the position
         try:
             close_resp = client.close_position(clean_sym, qty=qty)
         except AlpacaAPIError as exc:
@@ -207,7 +374,15 @@ class OrderExecutionService:
             try:
                 close_resp = client.close_position(disp_sym, qty=qty)
             except Exception:
-                return {"success": False, "error": str(exc)}
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "hint": (
+                        "Alpaca rejected the close. "
+                        f"Cancelled orders before attempt: {cancelled_orders}. "
+                        "Check if there are still pending orders locking the shares."
+                    ),
+                }
 
         # Update open trade logs for this symbol
         open_trades = TradeLog.objects.filter(symbol=disp_sym, status="open")

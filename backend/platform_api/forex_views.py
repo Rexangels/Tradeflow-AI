@@ -117,6 +117,46 @@ class ForexQuoteView(APIView):
         return Response(quote)
 
 
+class ActiveBrokerView(APIView):
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        from .services.mt5_client import get_mt5_client
+        active = OrderExecutionService.get_active_broker()
+        mt5_overview = get_mt5_client().get_account_overview()
+        alpaca_client = get_alpaca_client()
+        alpaca_acc = alpaca_client.get_account()
+
+        return Response({
+            "activeBroker": active,
+            "brokers": {
+                "alpaca": {
+                    "name": "Alpaca Securities",
+                    "mode": alpaca_client.mode,
+                    "connected": True,
+                    "equity": float(alpaca_acc.get("equity", 0.0)),
+                    "supportedAssets": ["US Stocks", "Crypto", "ETFs"],
+                },
+                "mt5": {
+                    "name": "Exness MetaTrader 5",
+                    "login": mt5_overview.get("accountNumber", "477536967"),
+                    "server": mt5_overview.get("brokerName", "Exness-MT5Trial9"),
+                    "currency": mt5_overview.get("currency", "USC"),
+                    "isCentAccount": mt5_overview.get("isCentAccount", True),
+                    "balance": mt5_overview.get("balance", 15.0),
+                    "connected": mt5_overview.get("connected", False),
+                    "statusNote": mt5_overview.get("statusNote"),
+                    "supportedAssets": ["Spot Forex (EUR/USD, GBP/USD)", "Gold (XAU/USD)", "Indices"],
+                },
+            },
+        })
+
+    def post(self, request):
+        broker = request.data.get("broker", "alpaca")
+        set_broker = OrderExecutionService.set_active_broker(broker)
+        return Response({"activeBroker": set_broker, "status": "updated"})
+
+
 class TradingAccountView(APIView):
     permission_classes = [IsTradeflowAdmin]
 

@@ -96,11 +96,34 @@ class MultiTimeframeService:
 
         # Suggested execution setup if aligned
         suggested_side = "buy" if (is_aligned and macro_bias == "BULLISH") else ("sell" if (is_aligned and macro_bias == "BEARISH") else None)
-        
-        # Stop loss and take profit taken from M15 ATR for tight risk
-        entry_price = m15_analysis["current_price"]
-        sl = m15_analysis["stop_loss"]
-        tp = m15_analysis["take_profit"]
+
+        is_crypto = any(c in norm_sym for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB", "XAU", "XAG"))
+        atr_raw = m15_indicators.get("atr", 0.0015)
+        atr_display = f"${atr_raw:.2f}" if is_crypto else f"{m15_analysis['atr_pips']} pips"
+
+        if is_aligned and suggested_side:
+            from .market_data import get_forex_quote
+            quote = get_forex_quote(disp_sym)
+            bid = quote["bid"]
+            ask = quote["ask"]
+            decimals = 2 if (is_crypto and bid >= 10.0) else (4 if is_crypto else (3 if "JPY" in norm_sym else 5))
+            min_sl_dist = ask * 0.005 if is_crypto else (0.10 if "JPY" in norm_sym else 0.0010)
+            sl_dist = max(atr_raw * 1.5, min_sl_dist)
+
+            if suggested_side == "buy":
+                entry_price = ask  # Long orders execute at the Ask
+                sl = round(entry_price - sl_dist, decimals)
+                tp = round(entry_price + (sl_dist * 2.0), decimals)  # True 2.0R measured from execution fill
+            else:
+                entry_price = bid  # Short orders execute at the Bid
+                sl = round(entry_price + sl_dist, decimals)
+                tp = round(entry_price - (sl_dist * 2.0), decimals)  # True 2.0R measured from execution fill
+            rr_ratio = 2.0
+        else:
+            entry_price = None
+            sl = None
+            tp = None
+            rr_ratio = 0.0
 
         return {
             "symbol": disp_sym,
@@ -124,6 +147,7 @@ class MultiTimeframeService:
                 "direction": m15_direction,
                 "confidence_pct": m15_analysis["confidence_pct"],
                 "rsi": m15_indicators["rsi"],
+                "atr_display": atr_display,
                 "atr_pips": m15_analysis["atr_pips"],
             },
             "is_aligned": is_aligned,
@@ -134,5 +158,5 @@ class MultiTimeframeService:
             "entry_price": entry_price,
             "stop_loss": sl,
             "take_profit": tp,
-            "rr_ratio": m15_analysis["rr_ratio"],
+            "rr_ratio": rr_ratio,
         }

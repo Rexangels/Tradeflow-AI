@@ -58,8 +58,8 @@ def handle_chat(user, payload: dict[str, Any]) -> dict[str, Any]:
     user_msg = payload["message"]
     ChatMessage.objects.create(thread=thread, role="user", content=user_msg)
 
-    # 1. Check for explicit trade execution intent (e.g., "buy EUR/USD", "close position")
-    execution_result = _handle_trade_intents(user, thread.agent, user_msg)
+    # 1. Check for explicit trade execution intent (e.g., "buy EUR/USD", "close position", "let buy it")
+    execution_result = _handle_trade_intents(user, thread, user_msg)
     if execution_result:
         ChatMessage.objects.create(
             thread=thread,
@@ -69,11 +69,13 @@ def handle_chat(user, payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     # 2. Collect rich market, technical, risk, and account contexts
-    contexts = _collect_contexts(user, payload)
+    contexts = _collect_contexts(user, payload, thread=thread)
     if execution_result:
         contexts.insert(0, ToolContext(name="order_execution_result", content=execution_result["summary"]))
 
     for context in contexts:
+        if context.name == "order_execution_result":
+            continue  # Already saved to ChatMessage above to avoid duplicate messages!
         ChatMessage.objects.create(
             thread=thread,
             role="tool",
@@ -234,14 +236,98 @@ def run_agent_cycle(user, agent: Optional[Agent] = None, symbol: Optional[str] =
     }
 
 
-def _handle_trade_intents(user, agent: Optional[Agent], message: str) -> Optional[dict[str, Any]]:
+def _guess_symbol_from_text(message: str) -> Optional[str]:
+    if not message:
+        return None
+    clean_msg = message.strip()
+    STOP_WORDS = {
+        "IT", "THIS", "THAT", "THE", "NOW", "TRADE", "ORDER", "POSITION",
+        "LOT", "LOTS", "UNITS", "SOME", "MORE", "PAIR", "FOR", "ON", "AT", "IN",
+        "GOOD", "OK", "YES", "NO", "BUY", "SELL", "LONG", "SHORT", "HERE", "PLEASE"
+    }
+    if clean_msg.upper() in STOP_WORDS:
+        return None
+
+    # Check open positions first
+    try:
+        from .order_execution import OrderExecutionService
+        open_pos = OrderExecutionService.get_open_positions()
+        for p in open_pos:
+            if p["symbol"].lower() in clean_msg.lower():
+                return p["symbol"]
+    except Exception:
+        pass
+
+    # Check crypto tickers and aliases first
+    crypto_alias_map = {
+        "BITCOIN": "BTC/USD",
+        "BTC": "BTC/USD",
+        "ETHEREUM": "ETH/USD",
+        "ETH": "ETH/USD",
+        "SOLANA": "SOL/USD",
+        "SOL": "SOL/USD",
+        "RIPPLE": "XRP/USD",
+        "XRP": "XRP/USD",
+        "DOGECOIN": "DOGE/USD",
+        "DOGE": "DOGE/USD",
+        "LITECOIN": "LTC/USD",
+        "LTC": "LTC/USD",
+        "CARDANO": "ADA/USD",
+        "ADA": "ADA/USD",
+        "BNB": "BNB/USD",
+        "GOLD": "XAU/USD",
+        "XAU": "XAU/USD",
+        "SILVER": "XAG/USD",
+        "XAG": "XAG/USD",
+    }
+    for kw, target in crypto_alias_map.items():
+        if re.search(rf"\b{kw}\b", clean_msg.upper()):
+            return target
+
+    # Check forex pairs
+    clean_upper = clean_msg.upper().replace("/", "")
+    for pair in FOREX_PAIRS_SET:
+        if pair in clean_upper:
+            return format_display_symbol(pair)
+
+    # Check common stock tickers
+    for ticker in ("AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "SPY", "QQQ"):
+        if re.search(rf"\b{ticker}\b", clean_msg.upper()):
+            return ticker
+
+    # Check slashed format like EUR/USD or SOL/USD
+    match = re.search(r"\b([A-Z]{3,4})/([A-Z]{3})\b", clean_msg.upper())
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+
+    return None
+
+
+def _get_last_discussed_symbol(thread: Optional[ChatThread]) -> Optional[str]:
+    if not thread:
+        return None
+    try:
+        recent = thread.messages.order_by("-created_at")[:12]
+        for msg in recent:
+            s = _guess_symbol_from_text(msg.content)
+            if s:
+                return s
+    except Exception:
+        pass
+    return None
+
+
+def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str, Any]]:
     """
     Parses natural language execution commands like:
     - 'buy 1000 EUR/USD'
-    - 'sell 500 GBP/USD with sl 1.2850'
-    - 'close EUR/USD position'
-    - 'close all positions'
+    - 'buy 0.01 SOL/USD'
+    - 'let buy it'
+    - 'good execute this trade'
+    - 'close position'
     """
+    agent = thread.agent if isinstance(thread, ChatThread) else thread
+    chat_thread = thread if isinstance(thread, ChatThread) else None
     msg = message.lower().strip()
 
     # Close positions intent
@@ -290,6 +376,9 @@ def _handle_trade_intents(user, agent: Optional[Agent], message: str) -> Optiona
     close_match = re.search(r"close\s+([a-zA-Z]{1,6}(?:/[a-zA-Z]{3})?)", msg)
     if close_match:
         target_sym = close_match.group(1).replace(" ", "").upper()
+        STOP_WORDS = {"IT", "THIS", "POSITION", "TRADE", "NOW"}
+        if target_sym in STOP_WORDS:
+            target_sym = _get_last_discussed_symbol(chat_thread) or "BTC/USD"
         res = OrderExecutionService.close_position(target_sym)
         if res.get("success"):
             return {
@@ -298,20 +387,80 @@ def _handle_trade_intents(user, agent: Optional[Agent], message: str) -> Optiona
             }
         return {"action": "close_position", "summary": f"Could not close position for {target_sym}: {res.get('error')}"}
 
-    # Order execution intent: buy or sell
-    trade_match = re.search(r"\b(buy|sell|long|short)\b\s+([\d,.]+)?\s*([a-zA-Z]{1,6}(?:/[a-zA-Z]{3})?)?", msg)
-    if trade_match and any(term in msg for term in ("execute", "place", "order", "enter", "trade", "buy", "sell")):
-        raw_side = trade_match.group(1).lower()
-        side = "buy" if raw_side in ("buy", "long") else "sell"
-        raw_qty = trade_match.group(2)
-        qty = float(raw_qty.replace(",", "")) if raw_qty else 1000.0
+    # Guard against pure inquiry / analytical phrases so we don't accidentally execute when user asks questions
+    inquiry_phrases = (
+        "see if", "check if", "can we", "could we", "should we", "is it good",
+        "is it safe", "can our ai", "can you", "what if", "how to", "why", "when to",
+        "analyse", "analyze", "what crypto", "which pair"
+    )
+    is_inquiry = any(p in msg for p in inquiry_phrases)
+    has_explicit_cmd = any(k in msg for k in ("now execute", "please execute", "go ahead and execute", "execute now", "place order now", "let buy", "let's buy", "lets buy", "buy it"))
+    if is_inquiry and not has_explicit_cmd:
+        return None
 
-        raw_sym = trade_match.group(3) or _guess_symbol_from_text(message)
+    # Check for trade execution intent
+    # 1. Direct explicit buy/sell (e.g. "buy 0.01 lot EUR/USD", "buy eur/usd", "sell 0.01 EUR/USD", "let buy it", "buy it")
+    trade_match = re.search(r"\b(buy|sell|long|short)\b(?:\s+([\d,.]+)\s*(?:lot|lots|units)?)?(?:\s+([a-zA-Z]{1,6}(?:/[a-zA-Z]{3})?))?", msg)
+    # 2. General execution intent (e.g. "execute trade on EUR/USD", "enter trade", "place the trade", "take trade")
+    exec_match = re.search(r"\b(execute|place|enter|open|take)\b.*?\b(trade|order|position)\b", msg)
+
+    if trade_match or exec_match:
+        side = None
+        raw_qty = None
+        raw_sym = None
+
+        STOP_WORDS = {
+            "IT", "THIS", "THAT", "THE", "NOW", "TRADE", "ORDER", "POSITION",
+            "LOT", "LOTS", "UNITS", "SOME", "MORE", "PAIR", "FOR", "ON", "AT", "IN",
+            "GOOD", "OK", "YES", "NO", "BUY", "SELL", "LONG", "SHORT", "HERE", "PLEASE"
+        }
+
+        if trade_match:
+            raw_side = trade_match.group(1).lower()
+            side = "buy" if raw_side in ("buy", "long") else "sell"
+            raw_qty = trade_match.group(2)
+            matched_sym = trade_match.group(3)
+            if matched_sym and matched_sym.upper() in STOP_WORDS:
+                matched_sym = None
+            raw_sym = (_guess_symbol_from_text(matched_sym) if matched_sym else None) or _guess_symbol_from_text(message)
+        else:
+            raw_sym = _guess_symbol_from_text(message)
+
+        if not raw_sym and chat_thread:
+            raw_sym = _get_last_discussed_symbol(chat_thread)
+
         if not raw_sym:
-            return None
+            open_pos = OrderExecutionService.get_open_positions()
+            raw_sym = open_pos[0]["symbol"] if open_pos else "BTC/USD"
 
         disp_sym = format_display_symbol(raw_sym)
-        curr_px = latest_price(disp_sym)
+        active_broker = OrderExecutionService.get_active_broker()
+
+        # Parse lot / qty:
+        lot_match = re.search(r"([\d,.]+)\s*(?:lot|lots)", msg)
+        if lot_match:
+            qty = float(lot_match.group(1))
+        elif raw_qty:
+            qty = float(raw_qty.replace(",", ""))
+        else:
+            qty = 0.01 if active_broker == "mt5" else 1000.0
+
+        # If side is not specified (e.g. "execute trade on EUR/USD"), infer from top-down confluence:
+        from .multi_timeframe import MultiTimeframeService
+        mtf = MultiTimeframeService.analyze_top_down(disp_sym)
+
+        if not side:
+            if mtf.get("suggested_side"):
+                side = mtf["suggested_side"].lower()
+            else:
+                return {
+                    "action": "execute_order_needs_direction",
+                    "summary": (
+                        f"Cannot auto-execute {disp_sym}: Multi-timeframe confluence is {mtf['confluence_quality']} "
+                        f"({mtf.get('rejection_reason', 'Neutral alignment')}). "
+                        f"To execute anyway, please explicitly specify side, e.g. 'buy 0.01 {disp_sym}' or 'sell 0.01 {disp_sym}'."
+                    ),
+                }
 
         # Parse optional explicit SL / TP from prompt
         sl_match = re.search(r"(?:sl|stop\s*loss)[:\s]+([\d.]+)", msg)
@@ -320,11 +469,28 @@ def _handle_trade_intents(user, agent: Optional[Agent], message: str) -> Optiona
         sl = float(sl_match.group(1)) if sl_match else None
         tp = float(tp_match.group(1)) if tp_match else None
 
-        # If not provided, dynamically compute healthy ATR brackets
+        # If not provided in prompt, use tight calculated SL / TP from top-down / ATR
         if not sl:
-            confluence = analyze_forex_confluence(disp_sym)
-            sl = confluence.get("stop_loss")
-            tp = tp or confluence.get("take_profit")
+            sl = mtf.get("stop_loss")
+            tp = tp or mtf.get("take_profit")
+            if not sl:
+                confluence = analyze_forex_confluence(disp_sym)
+                sl = confluence.get("stop_loss")
+                tp = tp or confluence.get("take_profit")
+
+        # Sanity check stop loss geometry against live price to prevent risk engine rejection
+        curr_px = latest_price(normalize_symbol(disp_sym))
+        if sl is not None and curr_px:
+            if side == "buy" and sl >= curr_px:
+                sl = round(curr_px * 0.985, 2 if curr_px > 10 else 4)
+            elif side == "sell" and sl <= curr_px:
+                sl = round(curr_px * 1.015, 2 if curr_px > 10 else 4)
+
+        if tp is not None and curr_px:
+            if side == "buy" and tp <= curr_px:
+                tp = round(curr_px * 1.03, 2 if curr_px > 10 else 4)
+            elif side == "sell" and tp >= curr_px:
+                tp = round(curr_px * 0.97, 2 if curr_px > 10 else 4)
 
         res = OrderExecutionService.execute_order(
             symbol=disp_sym,
@@ -336,19 +502,24 @@ def _handle_trade_intents(user, agent: Optional[Agent], message: str) -> Optiona
             ai_reasoning=f"Chat execution requested by user: '{message}'",
         )
 
+        broker_name = res.get("broker") or ("MetaTrader 5 (Exness Demo)" if active_broker == "mt5" else "Alpaca Paper")
+        vol_label = f"{res.get('volume', qty)} lot" if active_broker == "mt5" else f"{qty} units"
+
         if res.get("success"):
+            order_id = res.get("order_id") or res.get("ticket")
+            fill_px = res.get("entry_price")
             return {
                 "action": "execute_order",
                 "summary": (
-                    f"Successfully placed {side.upper()} order for {qty} units of {disp_sym} on Alpaca "
-                    f"at ~{res.get('entry_price')}. Attached Stop-Loss: {sl}, Take-Profit: {tp}. Order ID: {res.get('order_id')}."
+                    f"Successfully placed {side.upper()} order for {vol_label} of {disp_sym} on {broker_name} "
+                    f"at ~{fill_px}. Attached Stop-Loss: {sl}, Take-Profit: {tp}. Ticket/Order ID: #{order_id}."
                 ),
                 "details": res,
             }
         else:
             return {
                 "action": "execute_order_rejected",
-                "summary": f"Order could not be placed due to risk rule violation: {res.get('error')}",
+                "summary": f"Order for {disp_sym} on {broker_name} was rejected: {res.get('error')}",
                 "details": res,
             }
 
@@ -366,24 +537,35 @@ def _resolve_thread(user, payload: dict[str, Any]) -> ChatThread:
     return ChatThread.objects.create(owner=user, agent=agent, title=payload["message"][:80])
 
 
-def _collect_contexts(user, payload: dict[str, Any]) -> list[ToolContext]:
+def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread] = None) -> list[ToolContext]:
     message = payload["message"].lower()
     contexts: list[ToolContext] = []
-    symbol = payload.get("symbol") or _guess_symbol_from_text(payload["message"])
+
+    # Priority: message symbol > thread symbol > payload symbol
+    msg_sym = _guess_symbol_from_text(payload["message"])
+    thread_sym = _get_last_discussed_symbol(thread) if (not msg_sym and thread) else None
+    symbol = msg_sym or thread_sym or payload.get("symbol") or "BTC/USD"
     timeframe = payload.get("timeframe") or "1h"
     backtest_id = payload.get("backtestId")
 
-    # 1. Live Alpaca Account & Risk Guardrails Context
+    # 1. Live Active Broker Account & Risk Guardrails Context
     try:
         acc = OrderExecutionService.get_account_overview()
+        active_broker = OrderExecutionService.get_active_broker()
+        broker_label = "MetaTrader 5 (Exness Demo)" if active_broker == "mt5" else f"Alpaca ({acc.get('mode', 'paper').upper()})"
         rules = RiskManager.get_all_rules()
         positions = OrderExecutionService.get_open_positions()
+        equity_val = acc.get("equity") or acc.get("balance") or 0.0
+        free_margin = acc.get("marginFree") or acc.get("buying_power") or 0.0
+        leverage_val = acc.get("leverage", 2000)
+
         contexts.append(
             ToolContext(
-                name="alpaca_account_and_risk",
+                name="active_broker_and_account",
                 content=(
-                    f"Alpaca Account ({acc['mode'].upper()} mode, status: {acc['status']}): "
-                    f"Equity: ${acc['equity']:,.2f}, Cash: ${acc['cash']:,.2f}, Buying Power: ${acc['buying_power']:,.2f}. "
+                    f"Active Broker Gateway: {broker_label}. "
+                    f"Account Balance: ${acc.get('balance', equity_val):,.2f}, Equity: ${equity_val:,.2f}, "
+                    f"Free Margin / Buying Power: ${free_margin:,.2f}, Leverage: 1:{leverage_val}. "
                     f"Open positions count: {len(positions)}. "
                     f"Enforced Risk Rules: Max Risk/Trade: {rules.get('max_risk_pct')}%, "
                     f"Daily Loss Limit: {rules.get('daily_loss_limit_pct')}%, "
@@ -393,44 +575,121 @@ def _collect_contexts(user, payload: dict[str, Any]) -> list[ToolContext]:
         )
         if positions:
             pos_summary = ", ".join(
-                f"{p['symbol']} ({p['side']} {p['qty']}, entry {p['avg_entry_price']}, unrealized PnL: ${p['unrealized_pnl']:.2f})"
+                f"{p['symbol']} ({p['side'].upper()} {p.get('qty', p.get('volume'))}, entry {p.get('avg_entry_price', p.get('entry_price'))}, unrealized PnL: ${p['unrealized_pnl']:.2f})"
                 for p in positions[:4]
             )
             contexts.append(ToolContext(name="open_positions", content=f"Current open positions: {pos_summary}"))
     except Exception as exc:
         logger.warning(f"Could not gather account context: {exc}")
 
-    # 2. Forex Market Data & Technical Confluence Context
-    if symbol or any(kw in message for kw in ("forex", "eur", "gbp", "jpy", "usd", "market", "price", "signal", "pair")):
-        target_sym = symbol or "EUR/USD"
+    # 2. Forex & Crypto Market Data & Institutional Multi-Timeframe Confluence Context
+    crypto_kws = ("crypto", "btc", "eth", "sol", "xrp", "doge", "ltc", "ada", "bnb", "bitcoin", "ethereum", "gold", "silver")
+    all_kws = ("forex", "eur", "gbp", "jpy", "usd", "market", "price", "signal", "pair", "trade", "long", "short") + crypto_kws
+    if symbol or any(kw in message for kw in all_kws):
+        target_sym = symbol or "BTC/USD"
         try:
             quote = get_forex_quote(target_sym)
-            confluence = analyze_forex_confluence(target_sym, timeframe=timeframe)
             contexts.append(
                 ToolContext(
                     name="forex_market_quote",
                     content=(
                         f"Live Quote for {quote['symbol']}: Bid: {quote['bid']}, Ask: {quote['ask']}, Mid: {quote['mid']}, "
-                        f"Spread: {quote['spread_pips']} pips."
+                        f"Spread: {quote['spread_pips']}."
                     ),
                 )
             )
+
+            from .multi_timeframe import MultiTimeframeService
+            from .economic_calendar import EconomicCalendarService
+            from .session_filter import SessionFilterService
+
+            mtf = MultiTimeframeService.analyze_top_down(target_sym)
+            is_news_blocked, news_reason, news_event = EconomicCalendarService.is_news_blocked(target_sym)
+            session_info = SessionFilterService.get_current_session_info()
+
+            atr_text = mtf["m15"].get("atr_display") or f"{mtf['m15']['atr_pips']} pips"
+            plan_str = (
+                f"Suggested Side: {mtf['suggested_side'].upper()}, Calculated Entry: {mtf['entry_price']}, "
+                f"Stop-Loss: {mtf['stop_loss']}, Take-Profit: {mtf['take_profit']} (R:R {mtf['rr_ratio']}R)."
+                if mtf.get("suggested_side") else
+                f"Suggested Side: HOLD. Actionable Plan: STAND DOWN (No entry permitted due to {mtf['confluence_quality']} alignment)."
+            )
+
             contexts.append(
                 ToolContext(
-                    name="technical_confluence",
+                    name="top_down_institutional_confluence",
                     content=(
-                        f"Multi-Indicator Confluence for {target_sym} ({timeframe}): "
-                        f"Signal Direction: {confluence['direction'].upper()}, Confidence: {confluence['confidence_pct']}%, "
-                        f"Suggested Side: {confluence['suggested_side'].upper()}. "
-                        f"Calculated Stop-Loss: {confluence['stop_loss']}, Take-Profit: {confluence['take_profit']} (R:R {confluence['rr_ratio']}R). "
-                        f"ATR: {confluence['atr_pips']} pips, RSI: {confluence['indicators']['rsi']}, "
-                        f"EMA 20: {confluence['indicators']['ema20']}, EMA 50: {confluence['indicators']['ema50']}, EMA 200: {confluence['indicators']['ema200']}. "
-                        f"Key Factors: {'; '.join(confluence['reasons'][:3])}"
+                        f"Top-Down Multi-Timeframe Confluence for {target_sym}: "
+                        f"4H Macro Bias: {mtf['macro_bias_4h']} (RSI: {mtf['h4']['rsi']}, EMA200: {mtf['h4']['ema200']}). "
+                        f"1H Structure: {mtf['h1']['direction'].upper()} (RSI: {mtf['h1']['rsi']}). "
+                        f"15M Trigger: {mtf['m15']['direction'].upper()} (RSI: {mtf['m15']['rsi']}, ATR: {atr_text}). "
+                        f"Alignment Status: {mtf['confluence_quality']} (Composite Score: {mtf['composite_score']}/100, Aligned: {mtf['is_aligned']}). "
+                        f"Analysis Note: {mtf.get('rejection_reason') or 'Institutional multi-timeframe alignment confirmed'}. "
+                        f"{plan_str}"
                     ),
                 )
             )
+
+            contexts.append(
+                ToolContext(
+                    name="economic_news_shield",
+                    content=(
+                        f"High-Impact News Shield: {'BLOCKED (High Risk)' if is_news_blocked else 'CLEAR (Safe to Trade)'}. "
+                        f"Details: {news_reason}."
+                    ),
+                )
+            )
+
+            contexts.append(
+                ToolContext(
+                    name="session_liquidity_clock",
+                    content=(
+                        f"Global Trading Session: {session_info['primary_session']} "
+                        f"(Active: {', '.join(session_info.get('active_sessions', []))}). "
+                        f"Liquidity Rating: {session_info['liquidity_rating']}. "
+                        f"Session Note: {session_info.get('advice') or session_info.get('note', '')}. "
+                        f"Rollover Spread Warning: {session_info['is_rollover']}."
+                    ),
+                )
+            )
+
         except Exception as exc:
             contexts.append(ToolContext(name="market_status", content=f"Market analysis for {target_sym} unavailable: {exc}"))
+
+    # Opportunity scanner for general queries about what to trade
+    scan_kws = (
+        "other pair", "which pair", "what can we trade", "what else", "any setup",
+        "promising to trade", "any pair", "what crypto", "what forex", "any gold",
+        "best pair", "best trade", "scan all", "scan pairs", "scan the market",
+    )
+    if any(k in message for k in scan_kws):
+        from .multi_timeframe import MultiTimeframeService
+        scan_pairs = ["EUR/USD", "GBP/USD", "XAU/USD", "BTC/USD", "ETH/USD"]
+        scan_results = []
+        for p in scan_pairs:
+            try:
+                p_mtf = MultiTimeframeService.analyze_top_down(p)
+                entry_str = f", Entry: {p_mtf['entry_price']}" if p_mtf.get('entry_price') else ""
+                sl_str = f", SL: {p_mtf['stop_loss']}" if p_mtf.get('stop_loss') else ""
+                tp_str = f", TP: {p_mtf['take_profit']}" if p_mtf.get('take_profit') else ""
+                scan_results.append(
+                    f"- {p}: 4H {p_mtf['macro_bias_4h']} | Alignment: {p_mtf['confluence_quality']} "
+                    f"({p_mtf['composite_score']}/100) | Side: {(p_mtf['suggested_side'] or 'HOLD').upper()}"
+                    f"{entry_str}{sl_str}{tp_str}"
+                )
+            except Exception:
+                pass
+        if scan_results:
+            contexts.append(
+                ToolContext(
+                    name="market_scanner_overview",
+                    content=(
+                        "Multi-Pair Opportunity Scanner (Exness MT5 Active Instruments — Forex + Gold + Crypto):\n"
+                        + "\n".join(scan_results)
+                        + "\n\nBroker Note: EUR/USD, GBP/USD, XAU/USD, BTC/USD, ETH/USD are actively tradable 24/7 on this Exness MT5 Demo server. SOL, XRP, LTC have weekend broker restrictions (trade_mode=0)."
+                    ),
+                )
+            )
 
     # 3. Backtest Context
     if backtest_id:
@@ -462,79 +721,96 @@ def _generate_reply(thread: ChatThread, user_message: str, contexts: list[ToolCo
                 f"{system_prompt}\n\n"
                 f"Current UTC time: {timezone.now().isoformat()}\n"
                 f"Recent conversation:\n{history}\n\n"
-                f"Tool & Market Context:\n{tool_context}\n\n"
+                f"Live Tool & Market Context:\n{tool_context}\n\n"
                 f"User Request: {user_message}"
             )
-            response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-            text = getattr(response, "text", None)
-            if text:
-                return text
+
+            preferred_model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
+            candidate_models = [
+                preferred_model,
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-3.5-flash",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+            ]
+            models_to_try = []
+            for m in candidate_models:
+                if m and m not in models_to_try:
+                    models_to_try.append(m)
+
+            for model_name in models_to_try:
+                try:
+                    response = client.models.generate_content(model=model_name, contents=prompt)
+                    text = getattr(response, "text", None)
+                    if text and text.strip():
+                        logger.info(f"Generated TradeFlow AI reply using model: {model_name}")
+                        return text.strip()
+                except Exception as model_err:
+                    logger.warning(f"Gemini model {model_name} failed: {model_err}. Falling back to next...")
+
         except Exception as exc:
-            logger.warning("Gemini reply generation failed; using research synthesis.", exc_info=exc)
+            logger.warning("Gemini client initialization failed; using research synthesis.", exc_info=exc)
 
     return _fallback_reply(contexts, user_message)
 
 
 def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
     order_exec = next((c.content for c in contexts if c.name == "order_execution_result"), None)
-    confluence = next((c.content for c in contexts if c.name == "technical_confluence"), None)
-    account = next((c.content for c in contexts if c.name == "alpaca_account_and_risk"), None)
-
-    parts = []
     if order_exec:
-        parts.append(f"**Execution Update:** {order_exec}")
-    if confluence:
-        parts.append(f"**Technical Analysis:** {confluence}")
-    if account and not order_exec:
-        parts.append(f"**Account Status:** {account}")
+        return f"### Order Execution Update\n\n{order_exec}"
 
-    if parts:
-        return "\n\n".join(parts)
-    return "I analyzed your request against live Alpaca market data and risk rules. Let me know which currency pair you'd like to inspect or trade!"
+    quote_ctx = next((c.content for c in contexts if c.name == "forex_market_quote"), None)
+    mtf_ctx = next((c.content for c in contexts if c.name == "top_down_institutional_confluence"), None)
+    news_ctx = next((c.content for c in contexts if c.name == "economic_news_shield"), None)
+    session_ctx = next((c.content for c in contexts if c.name == "session_liquidity_clock"), None)
+    broker_ctx = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
+
+    if mtf_ctx:
+        return (
+            f"### TradeFlow Institutional Analysis\n\n"
+            f"**Market Context:** {quote_ctx or 'Live market quote active'}\n"
+            f"**Session & Liquidity:** {session_ctx or 'Standard session liquidity'}\n\n"
+            f"**Top-Down Confluence:**\n{mtf_ctx}\n\n"
+            f"**Economic Calendar Guardrail:**\n{news_ctx or 'News Shield Clear'}\n\n"
+            f"**Actionable Execution:**\n"
+            f"To automatically execute this trade on your active broker ({broker_ctx or 'MT5 Demo'}), simply reply: **'execute trade'** or **'buy 0.01 lot EUR/USD'**."
+        )
+
+    account = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
+    if account:
+        return f"### Account & Risk Overview\n\n{account}"
+
+    return "I analyzed your request against live market data and risk rules. Let me know which currency pair you'd like to inspect or trade!"
 
 
 def _system_prompt_for_contexts(contexts: list[ToolContext]) -> str:
     return (
-        "You are TradeFlow AI, an institutional-grade algorithmic trading copilot connected directly to Alpaca Markets paper trading. "
-        "You have live access to active open positions (such as equities like AAPL and crypto like BTC/USD), technical indicators, Alpaca account equity, "
-        "and strict risk management guardrails. "
-        "IMPORTANT RULES: "
-        "1. Note that Alpaca paper trading accounts support US Equities (Stocks/ETFs like AAPL, NVDA, TSLA, SPY) and Crypto (BTC/USD), but standard paper accounts do NOT support spot forex routing (which returns 422 asset not found). "
-        "2. TRADE GUARDIAN & ACTIVE TRADE MANAGEMENT: When an open position is in profit (like AAPL in profit > 70%), proactively advise the user to lock in gains using Trailing Stops or Break-Even Stops so the trade never turns into a loss! "
-        "Explain that a Trailing Stop (e.g., 5% or 10%) automatically trails price higher as it rallies, locking in profits, and triggers a market exit if price pulls back by that percentage. "
-        "Always ground your analysis in capital preservation, reward-to-risk ratios, and risk mitigation. "
-        "Be concise, practical, and direct."
+        "You are TradeFlow AI, an institutional-grade algorithmic trading copilot connected directly to "
+        "MetaTrader 5 (Exness Demo Account) and Alpaca Paper Trading. "
+        "You operate with the precision, rigor, and discipline of an elite institutional portfolio manager.\n\n"
+        "CAPABILITIES & BROKER ROUTING:\n"
+        "1. Spot Forex (EUR/USD, GBP/USD, USD/JPY, etc.) and 24/7 Crypto (BTC/USD, ETH/USD, XRP/USD, LTC/USD, SOL/USD, etc.) are routed directly to MetaTrader 5 (Exness) supporting 0.01 micro-lot sizing and ultra-tight spreads.\n"
+        "2. US Equities are routed to Alpaca Paper Trading.\n"
+        "3. You can AUTOMATICALLY EXECUTE trades directly when instructed by the user in the chat interface (e.g., 'buy 0.01 lot EUR/USD', 'buy 0.01 ETH/USD', 'execute trade', 'close BTC/USD').\n\n"
+        "INSTITUTIONAL ANALYSIS FRAMEWORK:\n"
+        "When analyzing any currency or crypto pair for a potential trade:\n"
+        "- Synthesize the live market data cleanly in professional Markdown (do NOT dump raw JSON or repeat tool prefixes).\n"
+        "- Present 4 clear, well-structured sections:\n"
+        "  1. **Market Snapshot & Session**: Bid/Ask, Spread, and active global liquidity session.\n"
+        "  2. **Top-Down Confluence (4H -> 1H -> 15M)**: State the 4H macro bias, 1H structure, and 15M trigger. Explicitly explain whether there is institutional alignment or a counter-trend trap.\n"
+        "  3. **Institutional Guardrails**: Status of High-Impact Red-Folder Economic News Shield and Session Rollover spread risk.\n"
+        "  4. **Actionable Trading Plan**: Clear YES or NO verdict on entering. If entering, specify Recommended Side (BUY/SELL), Entry Price, Protective Stop-Loss (strictly below entry for Buy, above for Sell), Take-Profit (minimum 1.5R - 2.0R), and Position Sizing (e.g. 0.01 lot).\n"
+        "- Conclude with a clear instruction on how to execute: e.g. 'To execute this trade immediately on your Exness MT5 demo account, simply type: **\"execute trade\"** or **\"buy 0.01 ETH/USD\"**.'\n\n"
+        "If an order execution was just performed (see order_execution_result context):\n"
+        "- Announce the successful trade execution clearly with Ticket Number, Broker (Exness MT5), Fill Price, SL, and TP.\n"
+        "- Confirm that position protection and risk guardrails are active.\n"
+        "Always be concise, authoritative, and focused on capital preservation."
     )
 
 
-def _guess_symbol_from_text(message: str) -> Optional[str]:
-    # Check open positions first
-    try:
-        from .order_execution import OrderExecutionService
-        open_pos = OrderExecutionService.get_open_positions()
-        for p in open_pos:
-            if p["symbol"].lower() in message.lower():
-                return p["symbol"]
-    except Exception:
-        pass
-
-    # Check forex pairs
-    clean_msg = message.upper().replace("/", "")
-    for pair in FOREX_PAIRS_SET:
-        if pair in clean_msg:
-            return format_display_symbol(pair)
-
-    # Check common stock tickers
-    for ticker in ("AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "SPY", "QQQ"):
-        if re.search(rf"\b{ticker}\b", message.upper()):
-            return ticker
-
-    # Check slashed format like EUR/USD
-    match = re.search(r"\b([A-Z]{3})/([A-Z]{3})\b", message.upper())
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
-
-    return None
 
 
 def _saved_backtest_contexts(backtest: dict[str, Any]) -> list[ToolContext]:

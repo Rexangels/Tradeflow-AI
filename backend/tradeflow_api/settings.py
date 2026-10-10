@@ -128,7 +128,9 @@ DJANGO_ADMIN_PASSWORD = os.getenv("DJANGO_ADMIN_PASSWORD", "change-me")
 BINANCE_API_BASE_URL = os.getenv("BINANCE_API_BASE_URL", "https://api.binance.com")
 MARKET_DATA_CACHE_TTL_SECONDS = int(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", "60"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 MARKET_DATA_FALLBACK_MODE = os.getenv("MARKET_DATA_FALLBACK_MODE", "synthetic" if DEBUG else "strict")
+
 
 # Trading broker configuration (Alpaca, OANDA, etc.)
 TRADING_BROKER = os.getenv("TRADING_BROKER", "alpaca")

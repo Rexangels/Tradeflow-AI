@@ -79,8 +79,14 @@ def normalize_symbol(symbol: str) -> str:
 
 
 def format_display_symbol(symbol: str) -> str:
-    """Formats 'EURUSD' into 'EUR/USD'."""
+    """Formats 'EURUSD' into 'EUR/USD', 'BTCUSD' into 'BTC/USD', etc."""
     norm = normalize_symbol(symbol)
+    crypto_bases = {"BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB", "XAU", "XAG"}
+    for base in crypto_bases:
+        if norm.startswith(base) and norm.endswith("USD"):
+            return f"{base}/USD"
+        if norm == base:
+            return f"{base}/USD"
     if len(norm) == 6:
         return f"{norm[:3]}/{norm[3:]}"
     return norm
@@ -88,9 +94,44 @@ def format_display_symbol(symbol: str) -> str:
 
 def get_forex_quote(symbol: str) -> dict:
     """
-    Returns latest bid, ask, mid price and spread for a pair.
+    Returns latest bid, ask, mid price and spread for a forex or crypto pair.
     """
     norm = normalize_symbol(symbol)
+
+    from .order_execution import OrderExecutionService
+    if OrderExecutionService.get_active_broker() == "mt5":
+        try:
+            from .mt5_client import get_mt5_client
+            client = get_mt5_client()
+            if client.is_connected():
+                import MetaTrader5 as mt5
+                actual = client._resolve_symbol(symbol)
+                if actual:
+                    tick = mt5.symbol_info_tick(actual)
+                    sym_info = mt5.symbol_info(actual)
+                    if tick and sym_info:
+                        is_crypto = any(k in norm for k in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB")) or tick.bid > 500
+                        if is_crypto:
+                            spread_val = round(tick.ask - tick.bid, 2 if tick.bid > 1.0 else 4)
+                            spread_pips = spread_val
+                        else:
+                            pip_size = 0.01 if "JPY" in norm else 0.0001
+                            spread_pips = round(sym_info.spread * sym_info.point / pip_size, 1)
+
+                        mid = round((tick.bid + tick.ask) / 2.0, sym_info.digits)
+                        return {
+                            "symbol": format_display_symbol(symbol),
+                            "normalized_symbol": norm,
+                            "bid": round(tick.bid, sym_info.digits),
+                            "ask": round(tick.ask, sym_info.digits),
+                            "mid": mid,
+                            "spread_pips": spread_pips,
+                            "source": "MetaTrader 5 (Exness)",
+                            "timestamp": timezone.now().isoformat(),
+                        }
+        except Exception:
+            pass
+
     mid = latest_price(norm, timeframe="1m")
     pip_size = 0.01 if "JPY" in norm else 0.0001
     spread_pips = FOREX_SPREADS_PIPS.get(norm, 1.2)
@@ -110,10 +151,52 @@ def get_forex_quote(symbol: str) -> dict:
     }
 
 
+def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int) -> list[dict]:
+    """
+    Fetch real historical candles directly from connected Exness MT5 terminal.
+    """
+    try:
+        from .mt5_client import get_mt5_client
+        client = get_mt5_client()
+        if not client.is_connected():
+            return []
+        import MetaTrader5 as mt5
+        actual = client._resolve_symbol(symbol)
+        if not actual:
+            return []
+        tf_map = {
+            "1m": mt5.TIMEFRAME_M1,
+            "5m": mt5.TIMEFRAME_M5,
+            "15m": mt5.TIMEFRAME_M15,
+            "1h": mt5.TIMEFRAME_H1,
+            "4h": mt5.TIMEFRAME_H4,
+            "1d": mt5.TIMEFRAME_D1,
+        }
+        mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
+        rates = mt5.copy_rates_from_pos(actual, mt5_tf, 0, limit)
+        if rates is None or len(rates) == 0:
+            return []
+        candles = []
+        for r in rates:
+            dt = datetime.fromtimestamp(r[0], tz=dt_timezone.utc).isoformat()
+            candles.append({
+                "time": dt,
+                "timestamp": int(r[0]),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": int(r[5]),
+            })
+        return candles
+    except Exception:
+        return []
+
+
 def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refresh: bool = False) -> list[dict]:
     """
     Fetch OHLCV candles for a given symbol and timeframe.
-    Caches in MarketDataCache.
+    Tries real MT5 first, then Alpaca, then realistic synthesis.
     """
     normalized_symbol = normalize_symbol(symbol)
     if timeframe not in SUPPORTED_TIMEFRAMES:
@@ -129,7 +212,21 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
     if cache_entry and not force_refresh and timezone.now() - cache_entry.updated_at <= ttl:
         return cache_entry.payload
 
-    # Attempt to load candles from Alpaca API if available
+    # 1. Attempt to load real historical candles from MetaTrader 5 (Exness)
+    try:
+        mt5_bars = _fetch_mt5_bars(normalized_symbol, timeframe, limit)
+        if mt5_bars and len(mt5_bars) > 0:
+            MarketDataCache.objects.update_or_create(
+                symbol=normalized_symbol,
+                timeframe=timeframe,
+                limit=limit,
+                defaults={"payload": mt5_bars},
+            )
+            return mt5_bars
+    except Exception:
+        pass
+
+    # 2. Attempt to load candles from Alpaca API if available
     try:
         alpaca_bars = _fetch_alpaca_bars(normalized_symbol, timeframe, limit)
         if alpaca_bars and len(alpaca_bars) > 0:
@@ -143,7 +240,7 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
     except Exception:
         pass
 
-    # High-fidelity realistic forex candle generation
+    # 3. High-fidelity realistic forex candle generation
     payload = _generate_forex_candles(normalized_symbol, timeframe, limit)
     MarketDataCache.objects.update_or_create(
         symbol=normalized_symbol,

@@ -107,6 +107,30 @@ export interface PositionDetailsResponse {
   error?: string;
 }
 
+export interface BrokerGatewayResponse {
+  activeBroker: "alpaca" | "mt5";
+  brokers: {
+    alpaca: {
+      name: string;
+      mode: string;
+      connected: boolean;
+      equity: number;
+      supportedAssets: string[];
+    };
+    mt5: {
+      name: string;
+      login: string;
+      server: string;
+      currency: string;
+      isCentAccount: boolean;
+      balance: number;
+      connected: boolean;
+      statusNote?: string | null;
+      supportedAssets: string[];
+    };
+  };
+}
+
 export const api = {
   health: () => request<{ status: string; service: string }>("/health"),
   getSession: () => request<AdminSession>("/admin/session"),
@@ -151,6 +175,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getChat: (threadId?: string) =>
+    request<AiChatResponse>(
+      `/ai/chat${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ""}`,
+    ),
+  newChat: (threadId?: string) =>
+    request<{ threadId: null; messages: [] }>(
+      `/ai/chat${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ""}`,
+      { method: "DELETE" },
+    ),
 
   // Forex & Alpaca Live Trading
   getForexPairs: () => request<ForexPair[]>("/forex/pairs"),
@@ -160,6 +193,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getForexQuote: (symbol: string) => request<ForexQuote>(`/forex/quote/${encodeURIComponent(symbol)}`),
+  getActiveBroker: () => request<BrokerGatewayResponse>("/trading/broker"),
+  setActiveBroker: (broker: "alpaca" | "mt5") =>
+    request<{ activeBroker: string; status: string }>("/trading/broker", {
+      method: "POST",
+      body: JSON.stringify({ broker }),
+    }),
   getTradingAccount: () => request<TradingAccount>("/trading/account"),
   getTradingPositions: () => request<TradingPosition[]>("/trading/positions"),
   getTradingPositionDetails: (symbol: string) =>

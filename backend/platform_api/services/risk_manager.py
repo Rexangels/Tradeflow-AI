@@ -138,17 +138,17 @@ class RiskManager:
                     }
 
         # 3. Fetch Account Info (Equity, Open Positions)
-        client = get_alpaca_client()
+        from .order_execution import OrderExecutionService
         try:
-            acc = account_data or client.get_account()
-            equity = float(acc.get("equity") or acc.get("cash") or 25000.0)
+            acc = account_data or OrderExecutionService.get_account_overview()
+            equity = float(acc.get("equity") or acc.get("cash") or 500.0)
         except Exception as exc:
-            logger.warning(f"Unable to fetch Alpaca account for risk check: {exc}")
-            equity = 25000.0
+            logger.warning(f"Unable to fetch account overview for risk check: {exc}")
+            equity = 500.0
 
         # 4. Open Positions Count Check
         try:
-            positions = client.get_positions()
+            positions = OrderExecutionService.get_open_positions()
             # If we already have a position in this symbol, we are modifying/adding, else count towards max
             existing_syms = {p.get("symbol", "").replace("/", "") for p in positions}
             clean_sym = symbol.replace("/", "")

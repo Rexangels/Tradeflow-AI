@@ -1,15 +1,13 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
-  AlertCircle,
-  ArrowRight,
+  BarChart2,
   Bot,
   CheckCircle2,
   ChevronRight,
   Compass,
   Cpu,
-  HelpCircle,
-  Play,
+  MessageSquarePlus,
   RefreshCw,
   Send,
   ShieldCheck,
@@ -17,14 +15,17 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+
+import { MarkdownRenderer } from "../components/ui/MarkdownRenderer";
+import { CandlestickChart } from "../components/CandlestickChart";
 
 import { api } from "../lib/api";
 import { MetricCard } from "../components/ui/metric-card";
-import { LivePriceCard } from "../components/trading/LivePriceCard";
 import { OrderFormPanel } from "../components/trading/OrderFormPanel";
 import { PositionsTable } from "../components/trading/PositionsTable";
-import { RiskGuardrailCard } from "../components/trading/RiskGuardrailCard";
+import { TradeJournalTable } from "../components/trading/TradeJournalTable";
+import { InstitutionalEdgeRadar } from "../components/trading/InstitutionalEdgeRadar";
 import { useWorkspaceStore } from "../stores/workspace-store";
 
 // Preset one-click prompts so the user never has to guess what to type
@@ -32,42 +33,47 @@ const QUICK_COMMANDS = [
   {
     id: "best-trade",
     title: "Find Best Trade Right Now",
-    desc: "Scans all 10 pairs & tells you the highest-confidence setup",
+    desc: "Scans forex & crypto pairs — picks the highest-confidence setup",
     icon: Sparkles,
-    prompt: "Scan all watched forex pairs right now. Which currency pair has the highest confluence signal? Give me the exact direction, entry price, stop-loss, and take-profit.",
+    prompt: "Scan the market right now across forex and crypto pairs. Which instrument (EUR/USD, GBP/USD, BTC/USD, ETH/USD, XAU/USD) has the highest confluence signal? Give me the exact direction, entry price, stop-loss, and take-profit for the best setup.",
   },
   {
     id: "analyze-active",
     title: "Analyze Active Pair",
     desc: "Plain-English verdict: Bullish, Bearish, or Stay Out",
     icon: TrendingUp,
-    prompt: "Analyze the current currency pair in detail. What are the RSI, MACD, and EMA trends saying? Should I enter or stay out?",
+    prompt: "Analyze the current pair in detail using top-down multi-timeframe analysis (4H, 1H, 15M). What are the RSI, MACD, and EMA trends saying? Is there institutional alignment? Should I enter or stay out?",
   },
   {
     id: "risk-audit",
     title: "Audit Account & Risk Limits",
-    desc: "Verifies buying power, open exposure, and daily loss circuit breaker",
+    desc: "Verifies equity, open exposure, and daily loss circuit breaker",
     icon: ShieldCheck,
-    prompt: "Audit my current Alpaca account status and risk rules. What is my buying power, how many positions can I open, and is it safe to trade today?",
+    prompt: "Audit my current Exness MT5 account status and risk rules. What is my equity, free margin, open positions, and is it safe to open a new trade today?",
   },
   {
     id: "execute-safely",
     title: "Suggest a Safe Order",
     desc: "Calculates exact 2% risk position sizing and 2.0R safety brackets",
     icon: Zap,
-    prompt: "Propose a fully risk-managed trade for our active pair that strictly follows our 2% risk rule and mandatory stop-loss requirement.",
+    prompt: "Propose a fully risk-managed trade for our active pair that strictly follows our 2% risk rule, mandatory stop-loss, and 1.5R minimum R:R. Include exact lot size for a $500 account.",
   },
 ];
 
 export function DashboardPage() {
   const { symbol, timeframe, setSymbol } = useWorkspaceStore();
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState("");
-  const [threadId, setThreadId] = useState<string | undefined>(undefined);
+  // Persist threadId in localStorage so it survives page refresh
+  const [threadId, setThreadId] = useState<string | undefined>(() => {
+    return localStorage.getItem("tradeflow_thread_id") ?? undefined;
+  });
   const [activeTab, setActiveTab] = useState<"ai-copilot" | "order-desk">("ai-copilot");
   const [selectedTradeSymbol, setSelectedTradeSymbol] = useState<string | null>(null);
   const [selectedTradeSide, setSelectedTradeSide] = useState<"buy" | "sell">("buy");
   const [aiScanStatus, setAiScanStatus] = useState<"idle" | "observing" | "analyzing" | "completed">("idle");
   const [aiLatestSummary, setAiLatestSummary] = useState<string | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Queries
   const accountQuery = useQuery({
@@ -92,6 +98,22 @@ export function DashboardPage() {
     queryKey: ["ai-signals"],
     queryFn: api.getSignals,
     refetchInterval: 8000,
+  });
+
+  // Candlestick chart data for the active pair
+  const candlesQuery = useQuery({
+    queryKey: ["candles", symbol, timeframe, "dashboard"],
+    queryFn: () => api.getCandles(symbol, timeframe, 120),
+    refetchInterval: 60000,
+  });
+
+  // Load persisted chat history on mount
+  const chatHistoryQuery = useQuery({
+    queryKey: ["chat-history", threadId],
+    queryFn: () => api.getChat(threadId),
+    // Only run if we have a threadId saved from before
+    enabled: !!threadId,
+    staleTime: Infinity, // Don't auto-refetch; only reload on demand
   });
 
   // Automated AI Agent Scan Cycle Mutation
@@ -122,15 +144,40 @@ export function DashboardPage() {
       return api.chat({ message: promptText, symbol, timeframe, threadId });
     },
     onSuccess: (payload) => {
-      setThreadId(payload.threadId);
+      const newThreadId = payload.threadId;
+      setThreadId(newThreadId);
+      if (newThreadId) {
+        localStorage.setItem("tradeflow_thread_id", newThreadId);
+      }
+      // Invalidate history cache so it picks up the latest messages
+      void queryClient.invalidateQueries({ queryKey: ["chat-history", newThreadId] });
       setMessage("");
     },
   });
+
+  // New Chat handler — deletes current thread and resets UI
+  const handleNewChat = async () => {
+    if (threadId) {
+      try { await api.newChat(threadId); } catch { /* ignore */ }
+    }
+    localStorage.removeItem("tradeflow_thread_id");
+    setThreadId(undefined);
+    chatMutation.reset();
+    void queryClient.removeQueries({ queryKey: ["chat-history"] });
+  };
+
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMutation.data, chatHistoryQuery.data]);
 
   const account = accountQuery.data;
   const pairs = pairsQuery.data ?? [];
   const positions = positionsQuery.data ?? [];
   const signals = signalsQuery.data ?? [];
+  const candles = candlesQuery.data ?? [];
   const unrealizedPnl = account?.totalUnrealizedPnl ?? 0;
 
   const handleQuickCommand = (prompt: string) => {
@@ -157,10 +204,14 @@ export function DashboardPage() {
                 <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
               </span>
               <span className="text-xs font-bold uppercase tracking-[0.25em] text-cyan-400">
-                Alpaca AI Trading Engine • Active
+                {account?.broker === "mt5" ? "Exness MT5 Gateway • Active" : "Alpaca Trading Engine • Active"}
               </span>
               <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                {account?.mode === "live" ? "Live Real Money" : "Paper Money ($26.9k)"}
+                {account?.broker === "mt5"
+                  ? `Exness Demo ($${(account?.balance ?? 500).toFixed(2)})`
+                  : account?.mode === "live"
+                  ? "Live Real Money"
+                  : "Paper Money ($26.9k)"}
               </span>
             </div>
 
@@ -168,7 +219,7 @@ export function DashboardPage() {
               Welcome to TradeFlow AI
             </h1>
             <p className="max-w-2xl text-xs sm:text-sm text-slate-300 leading-relaxed">
-              Your AI agent continuously evaluates 10 forex pairs using technical confluence (RSI, MACD, EMAs, ATR) and strictly enforces server-side risk limits before submitting any orders to Alpaca.
+              Your AI agent continuously evaluates 10 forex pairs using technical confluence (RSI, MACD, EMAs, ATR) and strictly enforces server-side risk limits before submitting any orders to {account?.broker === "mt5" ? "Exness MetaTrader 5" : "Alpaca"}.
             </p>
           </div>
 
@@ -191,7 +242,7 @@ export function DashboardPage() {
           <div className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-950/40 p-4 text-xs text-cyan-200 flex items-center gap-3 animate-pulse">
             <Cpu className="h-4 w-4 text-cyan-400" />
             <span>
-              <strong>AI Agent in Action:</strong> Querying Alpaca price feeds → Computing RSI(14), MACD(12,26,9), EMA(20,50,200), ATR(14) → Verifying 2% risk limits...
+              <strong>AI Agent in Action [{aiScanStatus}]:</strong> Querying {account?.broker === "mt5" ? "Exness MT5" : "Alpaca"} price feeds → Computing RSI(14), MACD(12,26,9), EMA(20,50,200), ATR(14) → Verifying 2% risk limits...
             </span>
           </div>
         )}
@@ -217,17 +268,17 @@ export function DashboardPage() {
       {/* 2. LIVE METRIC CARDS */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
-          label="Alpaca Account Equity"
-          value={`$${(account?.equity ?? 26911.46).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          label={account?.broker === "mt5" ? "Exness Account Equity" : "Alpaca Account Equity"}
+          value={`$${(account?.equity ?? 500).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           tone="positive"
         />
         <MetricCard
-          label="Available Cash"
-          value={`$${(account?.cash ?? 26911.46).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          label="Available Balance"
+          value={`$${(account?.balance ?? account?.cash ?? 500).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         />
         <MetricCard
-          label="Buying Power (Margin)"
-          value={`$${(account?.buying_power ?? 107645).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+          label={account?.broker === "mt5" ? "Leverage / Free Margin" : "Buying Power (Margin)"}
+          value={account?.broker === "mt5" ? `1:${account?.leverage ?? 2000} · $${(account?.marginFree ?? 500).toFixed(0)}` : `$${(account?.buying_power ?? 107645).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
         />
         <MetricCard
           label="Active Positions P&L"
@@ -281,6 +332,9 @@ export function DashboardPage() {
         </div>
       </section>
 
+      {/* INSTITUTIONAL EDGE RADAR (PHASE 2: ECONOMIC SHIELD, MTF CONFLUENCE, SESSION LIQUIDITY) */}
+      <InstitutionalEdgeRadar symbol={symbol} />
+
       {/* 4. MAIN WORKSPACE: COPILOT CONVERSATION & LIVE TRADING DESK */}
       <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
         <div className="space-y-6">
@@ -323,60 +377,85 @@ export function DashboardPage() {
                       Interactive AI Trader (Pair: {symbol} · {timeframe})
                     </h3>
                   </div>
-                  <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
-                    Connected to Alpaca REST
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
+                      {account?.broker === "mt5" ? "Exness MT5 Live" : "Alpaca REST API"}
+                    </span>
+                    <button
+                      type="button"
+                      title="Start a new conversation"
+                      onClick={() => void handleNewChat()}
+                      className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-[10px] font-bold text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300 transition-all"
+                    >
+                      <MessageSquarePlus className="h-3.5 w-3.5" />
+                      New Chat
+                    </button>
+                  </div>
                 </div>
 
                 {/* Conversation Thread */}
-                <div className="mt-4 space-y-3 max-h-[380px] overflow-y-auto pr-1">
-                  {(chatMutation.data?.messages ?? []).length > 0 ? (
-                    chatMutation.data?.messages.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className={`rounded-2xl p-4 text-xs leading-relaxed ${
-                          entry.role === "user"
-                            ? "bg-cyan-950/40 border border-cyan-800/40 text-cyan-100 ml-6"
-                            : entry.role === "tool"
-                            ? "bg-slate-900/40 border border-slate-800/60 text-slate-400 text-[11px]"
-                            : "bg-slate-900/80 border border-slate-800 text-slate-100 mr-4"
-                        }`}
-                      >
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
-                          {entry.role === "user" ? (
-                            "You"
-                          ) : entry.role === "tool" ? (
-                            "Market & Alpaca Context Engine"
-                          ) : (
-                            <>
-                              <Bot className="h-3 w-3 text-cyan-400 inline" /> TradeFlow AI
-                            </>
-                          )}
-                        </p>
-                        <p className="whitespace-pre-wrap">{entry.content}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="rounded-2xl border border-dashed border-slate-800 p-8 text-center text-slate-400">
-                      <Bot className="h-8 w-8 mx-auto text-slate-600 mb-2" />
-                      <p className="font-semibold text-slate-200 text-sm">How to prompt your AI:</p>
-                      <ul className="mt-2 text-xs space-y-1.5 text-slate-400 max-w-md mx-auto text-left list-disc list-inside">
-                        <li>Click any <strong>One-Click Command</strong> card above to start immediately.</li>
-                        <li>Ask for pair breakdowns: <em>&quot;Analyze EUR/USD&quot;</em> or <em>&quot;What is GBP/JPY doing?&quot;</em></li>
-                        <li>Ask to place a trade: <em>&quot;Buy 1000 EUR/USD with stop loss 1.0820&quot;</em>.</li>
-                        <li>Check risk anytime: <em>&quot;Audit my daily loss limit&quot;</em>.</li>
-                      </ul>
-                    </div>
-                  )}
+                {/* Prefer live mutation messages; fall back to persisted history from backend */}
+                {((): React.ReactNode => {
+                  const liveMessages = chatMutation.data?.messages ?? [];
+                  const historyMessages = chatHistoryQuery.data?.messages ?? [];
+                  const displayMessages = liveMessages.length > 0 ? liveMessages : historyMessages;
+                  return (
+                    <div ref={chatScrollRef} className="mt-4 space-y-3 max-h-[380px] overflow-y-auto pr-1">
+                      {displayMessages.length > 0 ? (
+                        displayMessages.map((entry) => (
+                          <div
+                            key={entry.id}
+                            className={`rounded-2xl p-4 text-xs leading-relaxed ${
+                              entry.role === "user"
+                                ? "bg-cyan-950/40 border border-cyan-800/40 text-cyan-100 ml-6"
+                                : entry.role === "tool"
+                                ? "bg-slate-900/40 border border-slate-800/60 text-slate-400 text-[11px]"
+                                : "bg-slate-900/80 border border-slate-800 text-slate-100 mr-4"
+                            }`}
+                          >
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
+                              {entry.role === "user" ? (
+                                "You"
+                              ) : entry.role === "tool" ? (
+                                "Market & Alpaca Context Engine"
+                              ) : (
+                                <>
+                                  <Bot className="h-3 w-3 text-cyan-400 inline" /> TradeFlow AI
+                                </>
+                              )}
+                            </p>
+                            {entry.role === "assistant" ? (
+                              <MarkdownRenderer content={entry.content} />
+                            ) : (
+                              <p className="whitespace-pre-wrap">{entry.content}</p>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-2xl border border-dashed border-slate-800 p-8 text-center text-slate-400">
+                          <Bot className="h-8 w-8 mx-auto text-slate-600 mb-2" />
+                          <p className="font-semibold text-slate-200 text-sm">How to prompt your AI:</p>
+                          <ul className="mt-2 text-xs space-y-1.5 text-slate-400 max-w-md mx-auto text-left list-disc list-inside">
+                             <li>Click any <strong>One-Click Command</strong> card above to start immediately.</li>
+                             <li>Ask for analysis: <em>&quot;Analyse EUR/USD&quot;</em> or <em>&quot;What is BTC/USD doing right now?&quot;</em></li>
+                             <li>Execute a trade: <em>&quot;Buy 0.01 lot EUR/USD&quot;</em> or <em>&quot;Buy 0.01 ETH/USD&quot;</em>.</li>
+                             <li>Close positions: <em>&quot;Close BTC/USD&quot;</em> or <em>&quot;Close all positions&quot;</em>.</li>
+                             <li>Check risk: <em>&quot;Audit my account and risk limits&quot;</em>.</li>
+                           </ul>
+                        </div>
+                      )}
 
-                  {chatMutation.isPending && (
-                    <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs text-cyan-300 flex items-center gap-2">
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-cyan-400" />
-                      TradeFlow AI is evaluating market data and formulating analysis...
+                      {chatMutation.isPending && (
+                        <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs text-cyan-300 flex items-center gap-2">
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                          TradeFlow AI is evaluating market data and formulating analysis...
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
               </div>
+
 
               {/* Input Area */}
               <div className="mt-4 pt-3 border-t border-slate-800/60">
@@ -391,7 +470,7 @@ export function DashboardPage() {
                         chatMutation.mutate(message);
                       }
                     }}
-                    placeholder={`Ask AI about ${symbol}, or type: 'Buy 1000 EUR/USD with stop loss' ...`}
+                    placeholder={`Ask AI: 'Analyse ${symbol}' or 'Buy 0.01 lot ${symbol}' or 'Close all positions' ...`}
                     className="w-full rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 pr-12 text-xs text-slate-100 outline-none focus:border-cyan-500"
                   />
                   <button
@@ -420,8 +499,24 @@ export function DashboardPage() {
           {/* Active Open Positions Table */}
           <PositionsTable positions={positions} isLoading={positionsQuery.isLoading} />
 
-          {/* Server-Side Risk Guardrails */}
-          <RiskGuardrailCard />
+          {/* Candlestick Chart for the active pair */}
+          <section className="rounded-2xl border border-slate-800/80 bg-slate-950/80 p-5 backdrop-blur">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <BarChart2 className="h-4 w-4 text-cyan-400" />
+                <h3 className="font-bold text-slate-100 text-sm">
+                  {symbol} · {timeframe} Live Chart
+                </h3>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">
+                {candles.length} bars
+              </span>
+            </div>
+            <CandlestickChart data={candles} />
+          </section>
+
+          {/* Trade Audit Journal */}
+          <TradeJournalTable />
         </div>
 
         {/* RIGHT COLUMN: REAL-TIME CURRENCY WATCHLIST & SIGNALS */}
@@ -431,7 +526,7 @@ export function DashboardPage() {
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
               <div className="flex items-center gap-2">
                 <Activity className="h-4 w-4 text-cyan-400" />
-                <h3 className="font-bold text-slate-100 text-sm">Live Currency Quotes</h3>
+                <h3 className="font-bold text-slate-100 text-sm">Watchlist — Forex &amp; Crypto</h3>
               </div>
               <span className="text-[11px] text-slate-400 font-mono">
                 {pairs.length} Pairs

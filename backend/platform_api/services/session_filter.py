@@ -19,7 +19,25 @@ class SessionFilterService:
         Determines active global market sessions in UTC.
         """
         now = timezone.now().astimezone(dt_timezone.utc)
+        weekday = now.weekday()  # 0=Monday, 5=Saturday, 6=Sunday
         hour = now.hour + (now.minute / 60.0)
+
+        # Check weekend: Friday 21:00 UTC through Sunday 21:00 UTC
+        is_weekend = (weekday == 4 and hour >= 21.0) or (weekday == 5) or (weekday == 6 and hour < 21.0)
+        if is_weekend:
+            return {
+                "current_utc_time": now.strftime("%H:%M:%S UTC"),
+                "current_hour_utc": round(hour, 2),
+                "primary_session": "Weekend Crypto Window (Forex Closed)",
+                "active_sessions": ["24/7 Crypto Markets"],
+                "liquidity_rating": "MODERATE (24/7 Crypto Active | Forex Closed)",
+                "liquidity_score": 60,
+                "favorable_for_trading": True,
+                "advice": "Traditional interbank Forex & equity markets are closed for the weekend. 24/7 Cryptocurrency markets (BTC, ETH) on MetaTrader 5 (Exness) are active.",
+                "is_london_ny_overlap": False,
+                "is_rollover": False,
+                "is_weekend": True,
+            }
 
         # Active market flags
         is_london = 7.0 <= hour < 16.0

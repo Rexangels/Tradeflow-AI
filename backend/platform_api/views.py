@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from .auth_utils import ensure_admin_user
 from .defaults import DEFAULT_AGENT
-from .models import Agent, BacktestRun, BacktestTrade, UsageEvent
+from .models import Agent, BacktestRun, BacktestTrade, ChatMessage, ChatThread, UsageEvent
 from .permissions import IsTradeflowAdmin
 from .presenters import serialize_agent, serialize_backtest
 from .serializers import (
@@ -229,10 +229,50 @@ class PaperTradingSessionView(APIView):
 class AiChatView(APIView):
     permission_classes = [IsTradeflowAdmin]
 
+    def _serialize_messages(self, thread: "ChatThread"):
+        msgs = thread.messages.order_by("created_at")
+        return [
+            {"id": str(m.id), "role": m.role, "content": m.content}
+            for m in msgs
+            if m.role != "tool"  # skip raw tool-context noise from history
+        ]
+
+    def get(self, request):
+        """Return the latest thread + its full message history for this user."""
+        thread_id = request.query_params.get("threadId")
+        if thread_id:
+            try:
+                thread = ChatThread.objects.get(id=thread_id, owner=request.user)
+            except ChatThread.DoesNotExist:
+                return Response({"threadId": None, "messages": []})
+        else:
+            thread = (
+                ChatThread.objects.filter(owner=request.user)
+                .order_by("-created")
+                .first()
+            )
+        if not thread:
+            return Response({"threadId": None, "messages": []})
+
+        # Return all messages including tool ones so the UI can render context
+        all_msgs = thread.messages.order_by("created_at")
+        messages = [
+            {"id": str(m.id), "role": m.role, "content": m.content}
+            for m in all_msgs
+        ]
+        return Response({"threadId": str(thread.id), "title": thread.title, "messages": messages})
+
     def post(self, request):
         serializer = AiChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         return Response(handle_chat(request.user, serializer.validated_data))
+
+    def delete(self, request):
+        """Mark a thread as ended (or delete it), returning a clean slate."""
+        thread_id = request.query_params.get("threadId")
+        if thread_id:
+            ChatThread.objects.filter(id=thread_id, owner=request.user).delete()
+        return Response({"threadId": None, "messages": []})
 
 
 class SettingsView(APIView):

@@ -1,11 +1,8 @@
 import {
-  CandlestickChart as ChartIcon,
   LogOut,
   Radar,
   Settings,
   TestTube2,
-  Wallet,
-  Waypoints,
 } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -18,10 +15,7 @@ import { useWorkspaceStore } from "../../stores/workspace-store";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: Radar },
-  { to: "/market-data", label: "Watchlist & Charts", icon: ChartIcon },
-  { to: "/paper-trading", label: "Alpaca Execution Desk", icon: Wallet },
-  { to: "/agents", label: "Strategy Agents", icon: Waypoints },
-  { to: "/backtests", label: "Backtesting", icon: TestTube2 },
+  { to: "/backtests", label: "Backtesting Lab", icon: TestTube2 },
   { to: "/settings", label: "Risk & Settings", icon: Settings },
 ];
 
@@ -99,9 +93,9 @@ export function AppShell() {
             {account && (
               <div className="rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3.5 text-xs">
                 <div className="flex items-center justify-between text-slate-400">
-                  <span>Alpaca Equity</span>
+                  <span>{account.broker === "mt5" ? "MT5 Equity" : "Alpaca Equity"}</span>
                   <span className="font-mono font-bold text-slate-100">
-                    ${account.equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    ${(account.equity ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="mt-1.5 flex items-center justify-between text-slate-400">
@@ -140,7 +134,7 @@ export function AppShell() {
                     </span>
                   </div>
                   <h2 className="text-lg font-bold text-slate-100">
-                    Alpaca Forex Strategy Desk
+                    {account?.broker === "mt5" ? "Exness MT5 Strategy Desk" : "Alpaca Forex Strategy Desk"}
                   </h2>
                 </div>
               </div>
@@ -182,9 +176,11 @@ export function AppShell() {
 
                 {account && (
                   <div className="hidden sm:flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-3.5 py-1.5 text-xs font-mono">
-                    <span className="text-slate-400">Power:</span>
+                    <span className="text-slate-400">
+                      {account.broker === "mt5" ? "Margin Free:" : "Power:"}
+                    </span>
                     <span className="font-bold text-emerald-400">
-                      ${account.buying_power.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      ${(account.marginFree ?? account.buying_power ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                     </span>
                   </div>
                 )}

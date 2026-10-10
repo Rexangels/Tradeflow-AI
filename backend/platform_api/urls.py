@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .forex_views import (
+    ActiveBrokerView,
     AgentCycleView,
     AISignalsView,
     EconomicCalendarView,
@@ -54,7 +55,8 @@ urlpatterns = [
     path("forex/pairs/<path:symbol>", ForexPairDetailView.as_view()),
     path("forex/quote/<path:symbol>", ForexQuoteView.as_view()),
 
-    # Alpaca Live / Paper Trading Execution
+    # Broker Execution Gateway (Alpaca & Exness MT5 Cent)
+    path("trading/broker", ActiveBrokerView.as_view()),
     path("trading/account", TradingAccountView.as_view()),
     path("trading/positions", TradingPositionsView.as_view()),
     path("trading/positions/<path:symbol>", TradingPositionDetailView.as_view()),
