@@ -172,7 +172,10 @@ export function CandlestickChart({
         onTradeSelect?.(trade);
       })
       .append("title")
-      .text((trade) => `${trade.type.toUpperCase()} ${trade.price.toFixed(2)} | ${new Date(trade.time).toLocaleString()}`);
+      .text((trade) => {
+        const p = trade.price < 50 ? trade.price.toFixed(5) : trade.price < 1000 ? trade.price.toFixed(3) : trade.price.toFixed(2);
+        return `${trade.type.toUpperCase()} ${p} | ${new Date(trade.time).toLocaleString()}`;
+      });
 
     const activeEntry = visibleEntries.find((entry) => entry.index === clampedPlaybackIndex);
     if (activeEntry) {

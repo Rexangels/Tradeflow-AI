@@ -133,3 +133,57 @@ class UsageEvent(models.Model):
 class AppSetting(TimeStampedModel):
     key = models.CharField(max_length=80, unique=True)
     value = models.JSONField(default=dict)
+
+
+class ForexPairConfig(TimeStampedModel):
+    symbol = models.CharField(max_length=20, unique=True)
+    is_watched = models.BooleanField(default=True)
+    default_qty = models.FloatField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.symbol} ({'watched' if self.is_watched else 'ignored'})"
+
+
+class RiskRule(TimeStampedModel):
+    key = models.CharField(max_length=60, unique=True)
+    value = models.JSONField(default=dict)
+
+    def __str__(self):
+        return self.key
+
+
+class TradeLog(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    alpaca_order_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    agent = models.ForeignKey(Agent, null=True, blank=True, on_delete=models.SET_NULL, related_name="trade_logs")
+    symbol = models.CharField(max_length=20)
+    side = models.CharField(max_length=10)  # buy | sell
+    qty = models.FloatField()
+    entry_price = models.FloatField(null=True, blank=True)
+    exit_price = models.FloatField(null=True, blank=True)
+    stop_loss = models.FloatField(null=True, blank=True)
+    take_profit = models.FloatField(null=True, blank=True)
+    realized_pnl = models.FloatField(null=True, blank=True)
+    status = models.CharField(max_length=20, default="open")  # open | closed | cancelled
+    ai_reasoning = models.TextField(blank=True)
+    mode = models.CharField(max_length=10, default="paper")  # paper | live
+
+    def __str__(self):
+        return f"{self.side.upper()} {self.symbol} {self.qty} ({self.status})"
+
+
+class AISignal(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    agent = models.ForeignKey(Agent, on_delete=models.CASCADE, related_name="signals")
+    symbol = models.CharField(max_length=20)
+    timeframe = models.CharField(max_length=8)
+    direction = models.CharField(max_length=10)  # long | short | neutral
+    confidence = models.FloatField(default=0.0)
+    reasoning = models.TextField(blank=True)
+    indicators = models.JSONField(default=dict)
+    acted_on = models.BooleanField(default=False)
+    trade_log = models.ForeignKey(TradeLog, null=True, blank=True, on_delete=models.SET_NULL, related_name="signals")
+
+    def __str__(self):
+        return f"{self.direction.upper()} {self.symbol} ({self.confidence:.2f})"

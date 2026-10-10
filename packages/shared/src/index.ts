@@ -434,3 +434,116 @@ export const DEFAULT_AGENT_TEMPLATE: AgentConfig = {
   holdingBehavior: "short-term",
   strategies: DEFAULT_STRATEGIES,
 };
+
+// -------------------------------------------------------------
+// Forex & Alpaca Live Trading Contracts
+// -------------------------------------------------------------
+export const forexQuoteSchema = z.object({
+  symbol: z.string(),
+  normalized_symbol: z.string().optional(),
+  bid: z.number(),
+  ask: z.number(),
+  mid: z.number(),
+  spread_pips: z.number(),
+  timestamp: z.string(),
+});
+export type ForexQuote = z.infer<typeof forexQuoteSchema>;
+
+export const forexPairConfigSchema = z.object({
+  id: z.string(),
+  symbol: z.string(),
+  normalizedSymbol: z.string(),
+  isWatched: z.boolean(),
+  defaultQty: z.number(),
+  notes: z.string(),
+  quote: forexQuoteSchema,
+});
+export type ForexPair = z.infer<typeof forexPairConfigSchema>;
+
+export const tradingAccountSchema = z.object({
+  mode: z.enum(["paper", "live"]),
+  account_id: z.string().optional(),
+  status: z.string(),
+  currency: z.string(),
+  equity: z.number(),
+  cash: z.number(),
+  buying_power: z.number(),
+  portfolio_value: z.number(),
+  pattern_day_trader: z.boolean().optional(),
+  trading_blocked: z.boolean().optional(),
+  openPositionsCount: z.number().int().optional(),
+  totalUnrealizedPnl: z.number().optional(),
+  riskRules: z.record(z.unknown()).optional(),
+});
+export type TradingAccount = z.infer<typeof tradingAccountSchema>;
+
+export const tradingPositionSchema = z.object({
+  symbol: z.string(),
+  raw_symbol: z.string(),
+  qty: z.number(),
+  side: z.string(),
+  avg_entry_price: z.number(),
+  current_price: z.number(),
+  market_value: z.number(),
+  cost_basis: z.number(),
+  unrealized_pnl: z.number(),
+  unrealized_pnl_pct: z.number(),
+  change_today: z.number().optional(),
+});
+export type TradingPosition = z.infer<typeof tradingPositionSchema>;
+
+export const tradeLogSchema = z.object({
+  id: z.string(),
+  alpaca_order_id: z.string().nullable(),
+  agent_id: z.string().nullable(),
+  agent_name: z.string().optional(),
+  symbol: z.string(),
+  side: z.string(),
+  qty: z.number(),
+  entry_price: z.number().nullable(),
+  exit_price: z.number().nullable(),
+  stop_loss: z.number().nullable(),
+  take_profit: z.number().nullable(),
+  realized_pnl: z.number().nullable(),
+  status: z.string(),
+  ai_reasoning: z.string(),
+  mode: z.string(),
+  created_at: z.string(),
+});
+export type TradeLogItem = z.infer<typeof tradeLogSchema>;
+
+export const riskRulesSchema = z.object({
+  max_risk_pct: z.number().optional(),
+  max_positions: z.number().optional(),
+  daily_loss_limit_pct: z.number().optional(),
+  min_rr_ratio: z.number().optional(),
+  require_stop_loss: z.boolean().optional(),
+  max_position_pct: z.number().optional(),
+});
+export type RiskRules = z.infer<typeof riskRulesSchema>;
+
+export const riskAssessmentSchema = z.object({
+  approved: z.boolean(),
+  reason: z.string(),
+  suggested_qty: z.number().optional(),
+  risk_amount_usd: z.number().optional(),
+  risk_pct: z.number().optional(),
+  rr_ratio: z.number().optional(),
+});
+export type RiskAssessment = z.infer<typeof riskAssessmentSchema>;
+
+export const aiSignalSchema = z.object({
+  id: z.string(),
+  agentName: z.string(),
+  symbol: z.string(),
+  timeframe: z.string(),
+  direction: z.enum(["long", "short", "neutral"]),
+  confidence: z.number(),
+  confidencePct: z.number(),
+  reasoning: z.string(),
+  indicators: z.record(z.unknown()),
+  actedOn: z.boolean(),
+  tradeLogId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type AISignalItem = z.infer<typeof aiSignalSchema>;

@@ -45,7 +45,7 @@ load_env_file()
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "tradeflow-dev-secret-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
-ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if host.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -130,8 +130,14 @@ MARKET_DATA_CACHE_TTL_SECONDS = int(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", "
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MARKET_DATA_FALLBACK_MODE = os.getenv("MARKET_DATA_FALLBACK_MODE", "synthetic" if DEBUG else "strict")
 
-# Trading broker configuration (OANDA, Binance, Alpaca, etc.)
-TRADING_BROKER = os.getenv("TRADING_BROKER", "oanda")
+# Trading broker configuration (Alpaca, OANDA, etc.)
+TRADING_BROKER = os.getenv("TRADING_BROKER", "alpaca")
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET", "")
+ALPACA_MODE = os.getenv("ALPACA_MODE", "paper")
+ALPACA_PAPER_BASE_URL = os.getenv("ALPACA_PAPER_BASE_URL", "https://paper-api.alpaca.markets")
+ALPACA_LIVE_BASE_URL = os.getenv("ALPACA_LIVE_BASE_URL", "https://api.alpaca.markets")
+ALPACA_DATA_URL = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
 OANDA_ACCESS_TOKEN = os.getenv("OANDA_ACCESS_TOKEN", "")
 OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
 OANDA_ENVIRONMENT = os.getenv("OANDA_ENVIRONMENT", "practice")
