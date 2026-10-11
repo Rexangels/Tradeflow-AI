@@ -95,6 +95,13 @@ class BacktestEngineTests(SimpleTestCase):
         with self.assertRaisesMessage(ValueError, "inconsistent OHLC"):
             run_backtest(payload, candles)
 
+    def test_backtest_rejects_explicitly_synthetic_candles(self):
+        candles = [{**candle, "source": "synthetic_demo"} for candle in make_candles()]
+        payload = {"symbol": "BTCUSDT", "timeframe": "1h", "agent": DEFAULT_AGENT}
+
+        with self.assertRaisesMessage(ValueError, "Synthetic demo candles"):
+            run_backtest(payload, candles)
+
     def test_backtest_with_no_enabled_strategies_takes_no_trades(self):
         payload = {
             "symbol": "ETHUSDT",

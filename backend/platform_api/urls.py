@@ -4,6 +4,7 @@ from .forex_views import (
     ActiveBrokerView,
     AgentCycleView,
     AISignalsView,
+    AlignmentScanView,
     EconomicCalendarView,
     ForexPairDetailView,
     ForexPairsView,
@@ -27,6 +28,7 @@ from .views import (
     BacktestsView,
     HealthView,
     MarketDataCandlesView,
+    MarketDataStatusView,
     PaperTradingAccountView,
     PaperTradingOrdersView,
     PaperTradingSessionView,
@@ -40,6 +42,7 @@ urlpatterns = [
     path("agents", AgentsView.as_view()),
     path("agents/<uuid:agent_id>", AgentDetailView.as_view()),
     path("market-data/candles", MarketDataCandlesView.as_view()),
+    path("market-data/status", MarketDataStatusView.as_view()),
     path("backtests", BacktestsView.as_view()),
     path("backtests/<uuid:backtest_id>", BacktestDetailView.as_view()),
     path("ai/chat", AiChatView.as_view()),
@@ -71,6 +74,7 @@ urlpatterns = [
     path("market/economic-calendar", EconomicCalendarView.as_view()),
     path("market/sessions", TradingSessionsView.as_view()),
     path("market/mtf-confluence/<path:symbol>", MultiTimeframeConfluenceView.as_view()),
+    path("market/alignment-scan", AlignmentScanView.as_view()),
 
     # Autonomous AI Agent Strategy Engine & Signals
     path("ai/agent-cycle", AgentCycleView.as_view()),

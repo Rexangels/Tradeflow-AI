@@ -27,11 +27,103 @@ class TradeMonitorService:
         Retrieves full position metrics, active Alpaca protective orders,
         breakeven benchmarks, and trailing stop recommendations.
         """
-        client = get_alpaca_client()
         clean_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
+        clean_key = clean_sym.replace("/", "").replace("m", "").replace("c", "").upper()
 
-        # 1. Fetch live position
+        # 1. Check MetaTrader 5 Gateway first
+        from .order_execution import OrderExecutionService
+        active_broker = OrderExecutionService.get_active_broker()
+        try:
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            mt5_positions = mt5_client.get_open_positions()
+            matching_mt5 = None
+            for p in mt5_positions:
+                p_sym_clean = normalize_symbol(p.get("symbol", "")).replace("/", "").replace("m", "").replace("c", "").upper()
+                p_raw_clean = p.get("raw_symbol", "").replace("/", "").replace("m", "").replace("c", "").upper()
+                if clean_key in (p_sym_clean, p_raw_clean) or symbol == p.get("symbol") or str(p.get("ticket")) == str(symbol):
+                    matching_mt5 = p
+                    break
+
+            if matching_mt5:
+                qty = float(matching_mt5.get("qty", 0.01))
+                side = matching_mt5.get("side", "buy").lower()
+                avg_entry = float(matching_mt5.get("avg_entry_price", matching_mt5.get("entry_price", 0.0)))
+                current_px = float(matching_mt5.get("current_price", avg_entry))
+                market_val = float(matching_mt5.get("market_value", qty * current_px))
+                unrealized_pl = float(matching_mt5.get("unrealized_pnl", 0.0))
+                unrealized_plpc = float(matching_mt5.get("unrealized_pnl_pct", 0.0))
+                sl = matching_mt5.get("stop_loss")
+                tp = matching_mt5.get("take_profit")
+                ticket = matching_mt5.get("ticket")
+
+                is_crypto = any(c in clean_key for c in ("BTC", "ETH", "SOL", "XRP", "LTC", "DOGE", "ADA", "BNB")) or current_px > 500
+                is_jpy = "JPY" in clean_key
+                decimals = 2 if (is_crypto and current_px >= 10.0) else (4 if is_crypto else (3 if is_jpy else 5))
+
+                breakeven_price = round(avg_entry * (1.0005 if side in ("buy", "long") else 0.9995), decimals)
+                is_protected = bool(sl)
+
+                trailing_presets = {
+                    "conservative_3pct": {
+                        "pct": 3.0,
+                        "stop_price": round(current_px * 0.97 if side in ("buy", "long") else current_px * 1.03, decimals),
+                        "guaranteed_pnl": round(((current_px * 0.97) - avg_entry) * qty if side in ("buy", "long") else (avg_entry - (current_px * 1.03)) * qty, 2),
+                    },
+                    "balanced_5pct": {
+                        "pct": 5.0,
+                        "stop_price": round(current_px * 0.95 if side in ("buy", "long") else current_px * 1.05, decimals),
+                        "guaranteed_pnl": round(((current_px * 0.95) - avg_entry) * qty if side in ("buy", "long") else (avg_entry - (current_px * 1.05)) * qty, 2),
+                    },
+                    "swing_8pct": {
+                        "pct": 8.0,
+                        "stop_price": round(current_px * 0.92 if side in ("buy", "long") else current_px * 1.08, decimals),
+                        "guaranteed_pnl": round(((current_px * 0.92) - avg_entry) * qty if side in ("buy", "long") else (avg_entry - (current_px * 1.08)) * qty, 2),
+                    },
+                }
+
+                risk_alert = None
+                if not is_protected and unrealized_plpc > 10.0:
+                    risk_alert = (
+                        f"HIGH RISK: Position is up {unrealized_plpc:.1f}% (+${unrealized_pl:,.2f}) with NO STOP LOSS. "
+                        f"A sudden market drawdown could erase your profits. Lock in break-even or activate a trailing stop."
+                    )
+                elif not is_protected:
+                    risk_alert = "CAUTION: No stop-loss order is currently active for this position."
+
+                return {
+                    "success": True,
+                    "broker": "mt5",
+                    "broker_name": "MetaTrader 5 (Exness Demo)",
+                    "ticket": ticket,
+                    "symbol": matching_mt5.get("symbol", disp_sym),
+                    "display_symbol": disp_sym,
+                    "asset_class": "crypto" if is_crypto else "forex",
+                    "side": side,
+                    "qty": qty,
+                    "avg_entry_price": avg_entry,
+                    "current_price": current_px,
+                    "market_value": market_val,
+                    "unrealized_pnl": unrealized_pl,
+                    "unrealized_pnl_pct": round(unrealized_plpc, 2),
+                    "breakeven_price": breakeven_price,
+                    "is_protected": is_protected,
+                    "risk_alert": risk_alert,
+                    "active_protection": {
+                        "trailing_stop": None,
+                        "stop_loss": {"id": str(ticket), "stop_price": sl, "qty": qty} if sl else None,
+                        "take_profit": {"id": str(ticket), "limit_price": tp, "qty": qty} if tp else None,
+                    },
+                    "trailing_presets": trailing_presets,
+                }
+        except Exception as exc:
+            logger.warning(f"Could not check MT5 positions for {symbol}: {exc}")
+
+        # 2. Fallback to Alpaca
+        client = get_alpaca_client()
+
+        # Fetch live position from Alpaca
         try:
             pos = client.get_position(clean_sym)
         except AlpacaAPIError:
@@ -49,7 +141,7 @@ class TradeMonitorService:
         unrealized_plpc = float(pos.get("unrealized_plpc", 0.0)) * 100.0
         asset_class = pos.get("asset_class", "us_equity")
 
-        # 2. Fetch active open orders for this symbol
+        # Fetch active open orders for this symbol
         open_orders = client.get_orders(symbols=pos.get("symbol"), status="open")
         active_trailing_stop = None
         active_stop_loss = None
@@ -81,7 +173,7 @@ class TradeMonitorService:
 
         is_protected = bool(active_trailing_stop or active_stop_loss)
 
-        # 3. Calculate dynamic protection levels
+        # Calculate dynamic protection levels
         breakeven_price = round(avg_entry * (1.001 if side == "long" else 0.999), 2)
         
         # Trailing stop options based on current price
@@ -115,6 +207,8 @@ class TradeMonitorService:
 
         return {
             "success": True,
+            "broker": "alpaca",
+            "broker_name": "Alpaca Paper Trading",
             "symbol": pos.get("symbol"),
             "display_symbol": disp_sym,
             "asset_class": asset_class,
@@ -148,15 +242,79 @@ class TradeMonitorService:
         """
         Cancels any existing stop/trailing orders on the position and applies the new protection.
         """
-        client = get_alpaca_client()
         clean_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
+        clean_key = clean_sym.replace("/", "").replace("m", "").replace("c", "").upper()
+
+        # Check MT5 Gateway first
+        try:
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            mt5_positions = mt5_client.get_open_positions()
+            matching_mt5 = None
+            for p in mt5_positions:
+                p_sym_clean = normalize_symbol(p.get("symbol", "")).replace("/", "").replace("m", "").replace("c", "").upper()
+                p_raw_clean = p.get("raw_symbol", "").replace("/", "").replace("m", "").replace("c", "").upper()
+                if clean_key in (p_sym_clean, p_raw_clean) or symbol == p.get("symbol") or str(p.get("ticket")) == str(symbol):
+                    matching_mt5 = p
+                    break
+
+            if matching_mt5:
+                ticket = matching_mt5["ticket"]
+                side = matching_mt5.get("side", "buy").lower()
+                avg_entry = float(matching_mt5.get("avg_entry_price", matching_mt5.get("entry_price", 0.0)))
+                current_px = float(matching_mt5.get("current_price", avg_entry))
+                is_crypto = any(c in clean_key for c in ("BTC", "ETH", "SOL", "XRP", "LTC")) or current_px > 500
+                is_jpy = "JPY" in clean_key
+                decimals = 2 if (is_crypto and current_px >= 10.0) else (4 if is_crypto else (3 if is_jpy else 5))
+
+                new_sl = None
+                new_tp = take_profit or matching_mt5.get("take_profit")
+
+                if protect_type == "trailing_stop":
+                    pct = trail_percent or 5.0
+                    if side in ("buy", "long"):
+                        new_sl = round(current_px * (1.0 - (pct / 100.0)), decimals)
+                    else:
+                        new_sl = round(current_px * (1.0 + (pct / 100.0)), decimals)
+                elif protect_type == "breakeven":
+                    if side in ("buy", "long"):
+                        new_sl = round(avg_entry * 1.0005, decimals)
+                    else:
+                        new_sl = round(avg_entry * 0.9995, decimals)
+                elif protect_type in ("stop_loss", "bracket") or stop_loss:
+                    new_sl = stop_loss
+
+                res = mt5_client.update_protection(
+                    ticket=ticket,
+                    stop_loss=new_sl or matching_mt5.get("stop_loss", 0.0),
+                    take_profit=new_tp,
+                )
+                if res.get("success"):
+                    return {
+                        "success": True,
+                        "broker": "mt5",
+                        "symbol": disp_sym,
+                        "protection_type": protect_type,
+                        "placed_orders": [{"type": protect_type, "stop_price": new_sl, "limit_price": new_tp, "id": str(ticket)}],
+                        "cancelled_orders": [],
+                        "message": f"Protection ({protect_type}) active on MetaTrader 5 (Ticket #{ticket}, SL: {new_sl}).",
+                    }
+                else:
+                    return {"success": False, "error": res.get("error", "MT5 protection update failed")}
+        except Exception as exc:
+            logger.warning(f"Could not apply MT5 protection for {symbol}: {exc}")
+
+        client = get_alpaca_client()
 
         # 1. Look up position to determine size and side
         try:
             pos = client.get_position(clean_sym)
         except AlpacaAPIError:
-            pos = client.get_position(disp_sym)
+            try:
+                pos = client.get_position(disp_sym)
+            except AlpacaAPIError:
+                return {"success": False, "error": f"Position '{symbol}' not found on active brokers."}
 
         qty = float(pos.get("qty", 0.0))
         side = pos.get("side", "long").lower()
@@ -290,14 +448,48 @@ class TradeMonitorService:
         """
         Closes a fraction of the open position (e.g. 25%, 50%) to bank profit.
         """
-        client = get_alpaca_client()
         clean_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
+        clean_key = clean_sym.replace("/", "").replace("m", "").replace("c", "").upper()
+
+        # 1. Check MT5 Gateway first
+        try:
+            from .mt5_client import get_mt5_client
+            mt5_client = get_mt5_client()
+            mt5_positions = mt5_client.get_open_positions()
+            matching_mt5 = None
+            for p in mt5_positions:
+                p_sym_clean = normalize_symbol(p.get("symbol", "")).replace("/", "").replace("m", "").replace("c", "").upper()
+                p_raw_clean = p.get("raw_symbol", "").replace("/", "").replace("m", "").replace("c", "").upper()
+                if clean_key in (p_sym_clean, p_raw_clean) or symbol == p.get("symbol") or str(p.get("ticket")) == str(symbol):
+                    matching_mt5 = p
+                    break
+
+            if matching_mt5:
+                ticket = matching_mt5["ticket"]
+                res = mt5_client.close_position(ticket)
+                if res.get("success"):
+                    return {
+                        "success": True,
+                        "broker": "mt5",
+                        "symbol": disp_sym,
+                        "closed_qty": matching_mt5.get("qty", 0.01),
+                        "remaining_qty": 0.0,
+                        "details": res,
+                    }
+                return {"success": False, "error": res.get("error", "MT5 close failed")}
+        except Exception as exc:
+            logger.warning(f"Could not close MT5 position for {symbol}: {exc}")
+
+        client = get_alpaca_client()
 
         try:
             pos = client.get_position(clean_sym)
         except AlpacaAPIError:
-            pos = client.get_position(disp_sym)
+            try:
+                pos = client.get_position(disp_sym)
+            except AlpacaAPIError:
+                return {"success": False, "error": f"Position '{symbol}' not found on active brokers."}
 
         total_qty = float(pos.get("qty", 0.0))
         target_qty = qty

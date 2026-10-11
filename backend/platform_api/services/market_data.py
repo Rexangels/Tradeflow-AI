@@ -73,6 +73,24 @@ class MarketDataUnavailableError(ValueError):
     pass
 
 
+SYNTHETIC_SOURCE = "synthetic_demo"
+
+
+def candle_data_source(candles: list[dict]) -> str:
+    """Return the common source for a candle batch, or ``unknown``.
+
+    Source is deliberately stored on every candle, rather than only in an API
+    response wrapper, so it survives the existing JSON cache and a user can
+    never mistake generated bars for broker/provider history.
+    """
+    sources = {str(candle.get("source", "unknown")) for candle in candles}
+    return sources.pop() if len(sources) == 1 else "mixed"
+
+
+def _with_source(candles: list[dict], source: str) -> list[dict]:
+    return [{**candle, "source": source} for candle in candles]
+
+
 def normalize_symbol(symbol: str) -> str:
     """Normalize any symbol representation into clean uppercase format (e.g. EURUSD)."""
     return symbol.replace("/", "").replace("_", "").replace("-", "").upper()
@@ -188,7 +206,7 @@ def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int) -> list[dict]:
                 "close": float(r[4]),
                 "volume": int(r[5]),
             })
-        return candles
+        return _with_source(candles, "mt5")
     except Exception:
         return []
 
@@ -196,12 +214,14 @@ def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int) -> list[dict]:
 def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refresh: bool = False) -> list[dict]:
     """
     Fetch OHLCV candles for a given symbol and timeframe.
-    Tries real MT5 first, then Alpaca, then realistic synthesis.
+    Tries real MT5 first, then Alpaca, then synthesis only when explicitly in
+    synthetic demo mode.
     """
     normalized_symbol = normalize_symbol(symbol)
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise ValueError(f"Unsupported timeframe: {timeframe}. Must be one of {SUPPORTED_TIMEFRAMES}")
 
+    fallback_mode = getattr(settings, "MARKET_DATA_FALLBACK_MODE", "strict").lower()
     cache_entry = MarketDataCache.objects.filter(
         symbol=normalized_symbol,
         timeframe=timeframe,
@@ -210,7 +230,9 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
 
     ttl = timedelta(seconds=getattr(settings, "MARKET_DATA_CACHE_TTL_SECONDS", 60))
     if cache_entry and not force_refresh and timezone.now() - cache_entry.updated_at <= ttl:
-        return cache_entry.payload
+        cached_source = candle_data_source(cache_entry.payload)
+        if fallback_mode == "synthetic" or cached_source not in {SYNTHETIC_SOURCE, "unknown", "mixed"}:
+            return cache_entry.payload
 
     # 1. Attempt to load real historical candles from MetaTrader 5 (Exness)
     try:
@@ -230,6 +252,7 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
     try:
         alpaca_bars = _fetch_alpaca_bars(normalized_symbol, timeframe, limit)
         if alpaca_bars and len(alpaca_bars) > 0:
+            alpaca_bars = _with_source(alpaca_bars, "alpaca")
             MarketDataCache.objects.update_or_create(
                 symbol=normalized_symbol,
                 timeframe=timeframe,
@@ -240,8 +263,20 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
     except Exception:
         pass
 
-    # 3. High-fidelity realistic forex candle generation
-    payload = _generate_forex_candles(normalized_symbol, timeframe, limit)
+    # Generated candles are useful for a UI demo only. They must never be a
+    # hidden fallback for research, paper-trading validation, or live routing.
+    # In demo mode, retain a last-known cache rather than replacing it with a
+    # generated series after a temporary provider outage.
+    if cache_entry and fallback_mode == "synthetic":
+        return cache_entry.payload
+    if fallback_mode != "synthetic":
+        raise MarketDataUnavailableError(
+            "Real market data is unavailable. Synthetic candles are disabled in strict mode. "
+            "Connect MT5/Alpaca or explicitly enable synthetic demo mode."
+        )
+
+    # 3. High-fidelity realistic forex candle generation (explicit demo mode)
+    payload = _with_source(_generate_forex_candles(normalized_symbol, timeframe, limit), SYNTHETIC_SOURCE)
     MarketDataCache.objects.update_or_create(
         symbol=normalized_symbol,
         timeframe=timeframe,

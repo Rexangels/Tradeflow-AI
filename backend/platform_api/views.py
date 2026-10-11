@@ -22,7 +22,7 @@ from .serializers import (
 )
 from .services.ai_orchestrator import handle_chat
 from .services.backtests import run_backtest, trade_timestamp
-from .services.market_data import get_candles, latest_price
+from .services.market_data import candle_data_source, get_candles, latest_price
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -116,6 +116,40 @@ class MarketDataCandlesView(APIView):
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         return Response(candles)
+
+
+class MarketDataStatusView(APIView):
+    """Read-only verification of the data used for a market symbol.
+
+    This lets the UI prove the current provider and last bar before a user
+    relies on analysis. It intentionally never returns provider credentials.
+    """
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        symbol = request.query_params.get("symbol", "EUR/USD")
+        timeframe = request.query_params.get("timeframe", "1h")
+        try:
+            candles = get_candles(symbol, timeframe, limit=2, force_refresh=True)
+        except ValueError as exc:
+            return Response({
+                "available": False,
+                "symbol": symbol.upper(),
+                "timeframe": timeframe,
+                "error": str(exc),
+            })
+
+        source = candle_data_source(candles)
+        latest = candles[-1] if candles else None
+        return Response({
+            "available": bool(latest),
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "source": source,
+            "isRealData": source in {"mt5", "alpaca"},
+            "latestBarTime": latest.get("time") if latest else None,
+            "checkedAt": timezone.now().isoformat(),
+        })
 
 
 class BacktestsView(APIView):

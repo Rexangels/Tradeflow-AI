@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from .market_data import format_display_symbol
+
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
@@ -161,15 +163,29 @@ class MT5Client:
         result = []
         for pos in positions:
             side = "buy" if pos.type == 0 else "sell"
+            entry_px = float(pos.price_open)
+            curr_px = float(pos.price_current)
+            qty_val = float(pos.volume)
+            pnl = round(float(pos.profit), 2)
+            cost_val = round(qty_val * entry_px, 2)
+            market_val = round(qty_val * curr_px, 2)
+            pnl_pct = round((pnl / cost_val) * 100.0, 2) if cost_val > 0 else 0.0
+
             result.append({
                 "id": str(pos.ticket),
                 "ticket": pos.ticket,
-                "symbol": pos.symbol,
+                "symbol": format_display_symbol(pos.symbol),
+                "raw_symbol": pos.symbol,
                 "side": side,
-                "qty": float(pos.volume),
-                "entry_price": float(pos.price_open),
-                "current_price": float(pos.price_current),
-                "unrealized_pnl": round(float(pos.profit), 2),
+                "qty": qty_val,
+                "volume": qty_val,
+                "avg_entry_price": entry_px,
+                "entry_price": entry_px,
+                "current_price": curr_px,
+                "market_value": market_val,
+                "cost_basis": cost_val,
+                "unrealized_pnl": pnl,
+                "unrealized_pnl_pct": pnl_pct,
                 "stop_loss": float(pos.sl) if pos.sl > 0 else None,
                 "take_profit": float(pos.tp) if pos.tp > 0 else None,
                 "comment": pos.comment,

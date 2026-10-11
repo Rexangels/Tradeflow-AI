@@ -7,7 +7,7 @@ import {
   TrendingUp, TrendingDown, Activity, Settings, Play, Database, 
   BarChart3, LayoutDashboard, History, Zap, Shield, Info,
   ChevronRight, Search, Filter, Download, Share2, Plus, Trash2,
-  MessageSquare, Send, X, Pause, RotateCcw, Brain
+  MessageSquare, Send, X, Pause, RotateCcw, Brain, ScanSearch
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -15,6 +15,7 @@ import remarkGfm from 'remark-gfm';
 import { cn } from './lib/utils';
 import { Candle, Timeframe, DataSource, AgentConfig, Strategy, BacktestResult, Trade } from './types';
 import { CandlestickChart } from './components/CandlestickChart';
+import { AlignmentScanner } from './components/AlignmentScanner';
 
 // Mock Data Generator
 const generateMockData = (days: number = 100): Candle[] => {
@@ -45,7 +46,7 @@ import { sendMessage, handleToolCall, chat, generateAIReflection } from './servi
 
 function AppContent() {
   const { user, loading, signIn, logout } = useAuth();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'backtest' | 'agents' | 'data' | 'live'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'backtest' | 'agents' | 'data' | 'live' | 'scanner'>('dashboard');
   const [symbol, setSymbol] = useState('BTC/USDT');
   const [timeframe, setTimeframe] = useState<Timeframe>('1h');
   const [source, setSource] = useState<DataSource>('Binance');
@@ -402,6 +403,12 @@ function AppContent() {
             label="Live Trading" 
             active={activeTab === 'live'} 
             onClick={() => setActiveTab('live')} 
+          />
+          <NavItem 
+            icon={<ScanSearch className="w-5 h-5" />} 
+            label="Alignment Scanner" 
+            active={activeTab === 'scanner'} 
+            onClick={() => setActiveTab('scanner')} 
           />
           <NavItem 
             icon={<Activity className="w-5 h-5" />} 
@@ -1026,14 +1033,28 @@ function AppContent() {
                   </div>
 
                   <div className="pt-6">
-                    <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-xl shadow-indigo-500/20">
-                      Enable Live Mode
+                    <button 
+                      onClick={() => setActiveTab('scanner')}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-xl font-bold transition-all shadow-xl shadow-indigo-500/20 flex items-center gap-2 mx-auto"
+                    >
+                      <ScanSearch className="w-5 h-5" />
+                      Open Alignment Scanner
                     </button>
                     <p className="text-[10px] text-slate-500 mt-4 uppercase tracking-widest font-bold">
-                      Requires Pro Subscription & Verified API Keys
+                      Auto-alerts when all 3 timeframes align
                     </p>
                   </div>
                 </div>
+              </motion.div>
+            )}
+            {activeTab === 'scanner' && (
+              <motion.div
+                key="scanner"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+              >
+                <AlignmentScanner />
               </motion.div>
             )}
             {activeTab === 'paper' && (

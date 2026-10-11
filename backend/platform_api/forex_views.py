@@ -419,3 +419,25 @@ class MultiTimeframeConfluenceView(APIView):
         result = MultiTimeframeService.analyze_top_down(symbol)
         return Response(result)
 
+
+class AlignmentScanView(APIView):
+    """
+    Real-time multi-pair alignment scanner.
+    GET /market/alignment-scan
+    Optional query param: ?symbols=BTC/USD,ETH/USD,XRP/USD
+    Returns all pairs sorted by alert level (TRADEABLE first).
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from .services.alignment_scanner import AlignmentScannerService, DEFAULT_SCAN_UNIVERSE
+
+        symbols_param = request.query_params.get("symbols")
+        if symbols_param:
+            symbols = [s.strip() for s in symbols_param.split(",") if s.strip()]
+        else:
+            symbols = None  # Uses DEFAULT_SCAN_UNIVERSE
+
+        result = AlignmentScannerService.scan(symbols)
+        return Response(result)
+

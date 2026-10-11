@@ -478,8 +478,34 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
                 sl = confluence.get("stop_loss")
                 tp = tp or confluence.get("take_profit")
 
-        # Sanity check stop loss geometry against live price to prevent risk engine rejection
-        curr_px = latest_price(normalize_symbol(disp_sym))
+        # Fetch live price for geometry & fallback calculations
+        norm_sym = normalize_symbol(disp_sym)
+        curr_px = latest_price(norm_sym)
+
+        # Dynamic fallback SL & TP if neither prompt nor confluence provided them:
+        if not sl and curr_px:
+            is_crypto = any(c in norm_sym for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB")) or curr_px > 500
+            is_jpy = "JPY" in norm_sym
+            decimals = 2 if (is_crypto and curr_px >= 10.0) else (4 if is_crypto else (3 if is_jpy else 5))
+            
+            # Safe institutional stop distance: 1.2% for crypto, 30 pips for JPY, 25 pips for forex/gold
+            if is_crypto:
+                sl_dist = round(curr_px * 0.012, decimals)
+            elif is_jpy:
+                sl_dist = 0.30
+            else:
+                sl_dist = 0.0025
+
+            tp_dist = round(sl_dist * 2.0, decimals)  # Strict 2.0R reward-to-risk ratio
+
+            if side == "buy":
+                sl = round(curr_px - sl_dist, decimals)
+                tp = tp or round(curr_px + tp_dist, decimals)
+            else:
+                sl = round(curr_px + sl_dist, decimals)
+                tp = tp or round(curr_px - tp_dist, decimals)
+
+        # Sanity check stop loss & take profit geometry against live price to prevent risk engine rejection
         if sl is not None and curr_px:
             if side == "buy" and sl >= curr_px:
                 sl = round(curr_px * 0.985, 2 if curr_px > 10 else 4)

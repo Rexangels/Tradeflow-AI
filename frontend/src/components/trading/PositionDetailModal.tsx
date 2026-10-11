@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  AlertCircle,
   ArrowDownRight,
   ArrowUpRight,
   Bot,
@@ -38,7 +39,8 @@ export function PositionDetailModal({ symbol, isOpen, onClose }: PositionDetailM
     queryKey: ["position-details", symbol],
     queryFn: () => (symbol ? api.getTradingPositionDetails(symbol) : null),
     enabled: isOpen && !!symbol,
-    refetchInterval: 3000,
+    refetchInterval: (query) => (query.state.data ? 3000 : false),
+    retry: 1,
   });
 
   const {
@@ -178,9 +180,27 @@ export function PositionDetailModal({ symbol, isOpen, onClose }: PositionDetailM
         {/* Modal Body */}
         <div className="overflow-y-auto p-6 space-y-6">
           {isLoading && !details ? (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400 space-y-3">
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-3">
               <RefreshCw className="h-8 w-8 animate-spin text-indigo-500" />
-              <p className="text-sm">Fetching real-time trade data from Alpaca...</p>
+              <p className="text-sm">Fetching real-time trade metrics...</p>
+            </div>
+          ) : !details ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-4">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-amber-400">
+                <AlertCircle className="h-7 w-7" />
+              </div>
+              <div className="text-center">
+                <p className="text-base font-semibold text-slate-200">Unable to load metrics for {symbol}</p>
+                <p className="text-xs text-slate-400 mt-1 max-w-sm">The position may have been closed or broker connection is syncing.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => refetch()}
+                className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/20 transition flex items-center gap-2"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Retry
+              </button>
             </div>
           ) : (
             <>
@@ -205,17 +225,21 @@ export function PositionDetailModal({ symbol, isOpen, onClose }: PositionDetailM
                   <div>
                     <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Avg Entry Price</span>
                     <p className="text-xl font-bold font-mono text-slate-200 mt-1">
-                      ${details?.avg_entry_price?.toFixed(2)}
+                      ${details?.avg_entry_price?.toFixed((details?.symbol || "").includes("JPY") ? 3 : ((details?.avg_entry_price ?? 0) > 100 ? 2 : ((details?.avg_entry_price ?? 0) > 1 ? 4 : 5)))}
                     </p>
-                    <span className="text-[11px] text-slate-500">Breakeven: ${details?.breakeven_price?.toFixed(2)}</span>
+                    <span className="text-[11px] text-slate-500">
+                      Breakeven: ${details?.breakeven_price?.toFixed((details?.symbol || "").includes("JPY") ? 3 : ((details?.breakeven_price ?? 0) > 100 ? 2 : 4))}
+                    </span>
                   </div>
 
                   <div>
                     <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Current Market Price</span>
                     <p className="text-xl font-bold font-mono text-indigo-300 mt-1">
-                      ${details?.current_price?.toFixed(2)}
+                      ${details?.current_price?.toFixed((details?.symbol || "").includes("JPY") ? 3 : ((details?.current_price ?? 0) > 100 ? 2 : ((details?.current_price ?? 0) > 1 ? 4 : 5)))}
                     </p>
-                    <span className="text-[11px] text-slate-500">Live Alpaca feed</span>
+                    <span className="text-[11px] text-slate-500">
+                      {(details as any)?.broker === "mt5" ? "Live Exness MT5 feed" : "Live Alpaca feed"}
+                    </span>
                   </div>
 
                   <div>
@@ -223,7 +247,7 @@ export function PositionDetailModal({ symbol, isOpen, onClose }: PositionDetailM
                     <p className="text-xl font-bold font-mono text-slate-100 mt-1">
                       ${details?.market_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
-                    <span className="text-[11px] text-slate-500">{details?.qty} shares</span>
+                    <span className="text-[11px] text-slate-500">{details?.qty} {(details as any)?.broker === "mt5" ? "lots" : "units"}</span>
                   </div>
                 </div>
               </div>

@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from .indicators import calculate_bollinger_bands, calculate_ema, calculate_rsi
 from .model_analysis import analyze_model
+from .market_data import SYNTHETIC_SOURCE, candle_data_source
 
 
 TRADING_PERIODS_PER_YEAR = {
@@ -28,6 +29,12 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
     validated_candles = validate_candles(candles)
     if len(validated_candles) < MIN_BACKTEST_CANDLES:
         raise ValueError("At least 50 candles are required to run a backtest.")
+    data_source = candle_data_source(candles)
+    if data_source == SYNTHETIC_SOURCE:
+        raise ValueError(
+            "Synthetic demo candles cannot be used to validate a trading strategy. "
+            "Connect a real market-data source before running this backtest."
+        )
 
     symbol = payload["symbol"].upper()
     timeframe = payload["timeframe"]
@@ -45,6 +52,9 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
     model_analysis = analyze_model(validated_candles, timeframe, settings)
     warnings = list(walk_forward["warnings"])
 
+    if data_source in {"unknown", "mixed"}:
+        warnings.append("Candle source is unknown or mixed; results are exploratory and not eligible for strategy promotion.")
+
     if walk_forward["available"] and walk_forward["averageTestExcessReturnPct"] < 0:
         warnings.append("Walk-forward test windows underperformed buy-and-hold on average.")
     if walk_forward["available"] and walk_forward["benchmarkBeatRatePct"] == 0:
@@ -57,6 +67,7 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
     result["validation"] = {
         "candlesChecked": len(validated_candles),
         "isSorted": True,
+        "dataSource": data_source,
         "warnings": warnings,
     }
     result["walkForward"] = walk_forward

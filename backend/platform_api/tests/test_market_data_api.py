@@ -31,3 +31,18 @@ class MarketDataApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["dashboard"]["watchlist"], [])
         self.assertEqual(response.data["systemStatus"]["marketDataFallbackMode"], "synthetic")
+
+    @patch("platform_api.views.get_candles")
+    def test_market_data_status_reports_the_verified_provider(self, mock_get_candles):
+        mock_get_candles.return_value = [
+            {"time": "2026-10-10T10:00:00+00:00", "source": "mt5"},
+            {"time": "2026-10-10T11:00:00+00:00", "source": "mt5"},
+        ]
+
+        response = self.client.get("/api/v1/market-data/status?symbol=EUR/USD&timeframe=1h")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["available"])
+        self.assertTrue(response.data["isRealData"])
+        self.assertEqual(response.data["source"], "mt5")
+        self.assertEqual(response.data["latestBarTime"], "2026-10-10T11:00:00+00:00")

@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from platform_api.models import Agent, TradeLog
 from .alpaca_client import AlpacaAPIError, get_alpaca_client
-from .market_data import format_display_symbol, latest_price, normalize_symbol
+from .market_data import SYNTHETIC_SOURCE, candle_data_source, format_display_symbol, get_candles, latest_price, normalize_symbol
 from .risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,19 @@ class OrderExecutionService:
         """
         norm_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
-        curr_price = limit_price or latest_price(norm_sym)
+
+        # A demo price must never be allowed to route an order. This applies to
+        # manual, AI-assisted, and autonomous paths alike.
+        try:
+            market_candles = get_candles(norm_sym, timeframe="1m", limit=2)
+        except ValueError as exc:
+            return {"success": False, "error": f"Order rejected: {exc}"}
+        if candle_data_source(market_candles) == SYNTHETIC_SOURCE:
+            return {
+                "success": False,
+                "error": "Order rejected: current market data is synthetic demo data, not a broker/provider quote.",
+            }
+        curr_price = limit_price or float(market_candles[-1]["close"])
 
         # 1. Risk Evaluation
         if not bypass_risk:

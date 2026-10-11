@@ -36,6 +36,16 @@ Frontend: [http://localhost:3000](http://localhost:3000)
 
 Backend API: [http://localhost:4000/api/v1/health](http://localhost:4000/api/v1/health)
 
+## Real Market Data
+
+Keep `MARKET_DATA_FALLBACK_MODE=strict` for research, paper trading, and any
+broker-connected workflow. In strict mode the platform refuses unavailable
+market data instead of creating a synthetic series. Configure either a running
+MT5 terminal (`MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, optionally
+`MT5_PATH`) or Alpaca credentials. The Market Data page identifies the provider
+and verifies the latest bar; `GET /api/v1/market-data/status` exposes the same
+read-only verification for a symbol and timeframe.
+
 ## Useful Commands
 
 - Frontend type-check: `npm run lint --workspace @tradeflow/web`

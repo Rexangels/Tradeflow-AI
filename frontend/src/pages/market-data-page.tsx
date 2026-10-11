@@ -29,6 +29,12 @@ export function MarketDataPage() {
     refetchInterval: 5000,
   });
 
+  const marketStatusQuery = useQuery({
+    queryKey: ["market-data-status", symbol, timeframe],
+    queryFn: () => api.getMarketDataStatus(symbol, timeframe),
+    refetchInterval: 60_000,
+  });
+
   const chatMutation = useMutation({
     mutationFn: () => api.chat({ message, symbol, timeframe, threadId }),
     onSuccess: (payload) => {
@@ -42,6 +48,16 @@ export function MarketDataPage() {
   const quote = quoteQuery.data;
   const candles = candlesQuery.data ?? [];
   const candleError = candlesQuery.error ? (candlesQuery.error as Error).message : null;
+  const status = marketStatusQuery.data;
+  const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
+  const isSynthetic = candleSource === "synthetic_demo";
+  const sourceLabel = candleSource === "synthetic_demo"
+    ? "Synthetic demo data"
+    : candleSource === "mt5"
+      ? "MetaTrader 5"
+      : candleSource === "alpaca"
+        ? "Alpaca market data"
+        : "Source not verified";
 
   return (
     <div className="space-y-6">
@@ -51,8 +67,8 @@ export function MarketDataPage() {
           <div>
             <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-              <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-400">
-                Alpaca Forex Feed
+              <p className={`text-xs font-bold uppercase tracking-[0.24em] ${isSynthetic ? "text-amber-400" : "text-cyan-400"}`}>
+                {sourceLabel}
               </p>
             </div>
             <h2 className="mt-1 text-2xl font-bold text-slate-100">
@@ -61,6 +77,13 @@ export function MarketDataPage() {
             <p className="mt-1 text-xs text-slate-400">
               Real-time candlestick charts, indicator confluence, and direct execution desk.
             </p>
+            {status && (
+              <p className={`mt-2 text-[11px] ${status.isRealData ? "text-emerald-300" : "text-amber-300"}`}>
+                {status.isRealData
+                  ? `Verified ${sourceLabel} · latest bar ${status.latestBarTime ? new Date(status.latestBarTime).toLocaleString() : "available"}`
+                  : `Data verification: ${status.error ?? "not connected to a real provider"}`}
+              </p>
+            )}
           </div>
 
           {quote && (
@@ -88,6 +111,18 @@ export function MarketDataPage() {
         </section>
       )}
 
+      {isSynthetic && (
+        <section className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
+          <span className="font-semibold">Demo data only.</span> These candles are generated for interface testing and cannot be used for strategy validation or order execution. Connect MT5 or Alpaca for real market data.
+        </section>
+      )}
+
+      {!candleError && candles.length > 0 && candleSource === "unknown" && (
+        <section className="rounded-2xl border border-slate-700 bg-slate-900/70 p-4 text-xs text-slate-300">
+          Candle provenance is unavailable. Treat analysis as exploratory until the feed is refreshed from a verified provider.
+        </section>
+      )}
+
       {/* Main Chart and Side Order Panel */}
       <div className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
         <div className="space-y-6">
@@ -100,7 +135,7 @@ export function MarketDataPage() {
           <section className="overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950/70 backdrop-blur">
             <div className="border-b border-slate-800/80 px-5 py-3.5 flex items-center justify-between">
               <h3 className="font-semibold text-slate-100 text-sm">Recent Candlestick Bars</h3>
-              <span className="text-xs text-slate-400 font-mono">120 Bars Loaded</span>
+              <span className="text-xs text-slate-400 font-mono">{candles.length} Bars · {sourceLabel}</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">

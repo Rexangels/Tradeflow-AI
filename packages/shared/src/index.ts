@@ -19,6 +19,9 @@ export const candleSchema = z.object({
   low: z.number(),
   close: z.number(),
   volume: z.number(),
+  // Present on candles fetched from the backend. Optional for imported
+  // historical files created before data provenance was introduced.
+  source: z.string().optional(),
 });
 export type Candle = z.infer<typeof candleSchema>;
 

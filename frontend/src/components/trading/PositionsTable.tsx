@@ -70,13 +70,22 @@ export function PositionsTable({ positions, isLoading }: PositionsTableProps) {
             </thead>
             <tbody className="divide-y divide-slate-800/50">
               {positions.map((pos) => {
-                const isProfit = pos.unrealized_pnl >= 0;
-                const isJpy = pos.symbol.includes("JPY");
-                const decimals = isJpy ? 3 : (pos.current_price > 100 ? 2 : 5);
+                const qty = Number(pos.qty ?? (pos as any).volume ?? 0);
+                const avgEntry = Number(pos.avg_entry_price ?? (pos as any).entry_price ?? 0);
+                const currentPx = Number(pos.current_price ?? avgEntry ?? 0);
+                const pnl = Number(pos.unrealized_pnl ?? 0);
+                const isProfit = pnl >= 0;
+                const costBasis = Number(pos.cost_basis ?? (qty * avgEntry));
+                const pnlPct = Number(
+                  pos.unrealized_pnl_pct ?? (costBasis > 0 ? (pnl / costBasis) * 100 : 0)
+                );
+                const marketVal = Number(pos.market_value ?? (qty * currentPx));
+                const isJpy = (pos.symbol || "").includes("JPY");
+                const decimals = isJpy ? 3 : (currentPx > 100 ? 2 : (currentPx > 1 ? 4 : 5));
 
                 return (
                   <tr
-                    key={pos.symbol}
+                    key={pos.symbol || (pos as any).ticket || Math.random()}
                     onClick={() => setSelectedSymbol(pos.symbol)}
                     className="hover:bg-indigo-950/20 hover:border-l-4 hover:border-l-indigo-500 transition-all cursor-pointer group"
                   >
@@ -93,25 +102,25 @@ export function PositionsTable({ positions, isLoading }: PositionsTableProps) {
                     <td className="px-4 py-3.5">
                       <span
                         className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase ${
-                          pos.side.toLowerCase() === "buy" || pos.side.toLowerCase() === "long"
+                          (pos.side || "").toLowerCase() === "buy" || (pos.side || "").toLowerCase() === "long"
                             ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
                             : "bg-rose-500/15 text-rose-400 border border-rose-500/30"
                         }`}
                       >
-                        {pos.side.toUpperCase()}
+                        {(pos.side || "HOLD").toUpperCase()}
                       </span>
                     </td>
                     <td className="px-4 py-3.5 font-mono text-right text-slate-200">
-                      {pos.qty.toLocaleString()}
+                      {qty.toLocaleString()}
                     </td>
                     <td className="px-4 py-3.5 font-mono text-right text-slate-400">
-                      ${pos.avg_entry_price.toFixed(decimals)}
+                      ${avgEntry.toFixed(decimals)}
                     </td>
                     <td className="px-4 py-3.5 font-mono text-right text-slate-200 font-medium">
-                      ${pos.current_price.toFixed(decimals)}
+                      ${currentPx.toFixed(decimals)}
                     </td>
                     <td className="px-4 py-3.5 font-mono text-right text-slate-300">
-                      ${pos.market_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ${marketVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="px-4 py-3.5 font-mono text-right">
                       <div
@@ -121,10 +130,10 @@ export function PositionsTable({ positions, isLoading }: PositionsTableProps) {
                       >
                         {isProfit ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                         <span>
-                          {isProfit ? "+" : ""}${pos.unrealized_pnl.toFixed(2)}
+                          {isProfit ? "+" : ""}${pnl.toFixed(2)}
                         </span>
                         <span className="text-[10px] font-normal opacity-80">
-                          ({isProfit ? "+" : ""}{pos.unrealized_pnl_pct.toFixed(2)}%)
+                          ({isProfit ? "+" : ""}{pnlPct.toFixed(2)}%)
                         </span>
                       </div>
                     </td>

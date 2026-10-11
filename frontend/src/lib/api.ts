@@ -156,6 +156,8 @@ export const api = {
     }),
   getCandles: (symbol: string, timeframe: string, limit = 300, forceRefresh = false) =>
     request<Candle[]>(`/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&forceRefresh=${forceRefresh}`),
+  getMarketDataStatus: (symbol: string, timeframe: string) =>
+    request<MarketDataStatusResponse>(`/market-data/status?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`),
   getBacktests: () => request<BacktestResult[]>("/backtests"),
   runBacktest: (payload: BacktestRequest) =>
     request<BacktestResult>("/backtests", {
@@ -328,6 +330,17 @@ export const api = {
     request<MTFConfluenceResponse>(`/market/mtf-confluence/${encodeURIComponent(symbol)}`),
 };
 
+export interface MarketDataStatusResponse {
+  available: boolean;
+  symbol: string;
+  timeframe: string;
+  source?: string;
+  isRealData?: boolean;
+  latestBarTime?: string | null;
+  checkedAt?: string;
+  error?: string;
+}
+
 export interface EconomicCalendarResponse {
   events: Array<{
     id: string;
@@ -377,4 +390,3 @@ export interface MTFConfluenceResponse {
   take_profit: number | null;
   rr_ratio: number;
 }
-
