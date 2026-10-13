@@ -15,8 +15,16 @@ from .multi_timeframe import MultiTimeframeService
 
 logger = logging.getLogger(__name__)
 
-# All crypto pairs available on Exness MT5 + popular forex
+# Major forex pairs + crypto pairs available on Exness MT5
 DEFAULT_SCAN_UNIVERSE = [
+    # Forex majors
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "AUD/USD",
+    "USD/CHF",
+    "USD/CAD",
+    # Crypto
     "BTC/USD",
     "ETH/USD",
     "XRP/USD",

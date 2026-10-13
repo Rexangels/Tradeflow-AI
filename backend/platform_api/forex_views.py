@@ -416,7 +416,10 @@ class MultiTimeframeConfluenceView(APIView):
     def get(self, request, symbol):
         from .services.multi_timeframe import MultiTimeframeService
 
-        result = MultiTimeframeService.analyze_top_down(symbol)
+        # ?mode=intraday  →  1H anchor, 15M entry, 4H = context only
+        # ?mode=swing     →  4H anchor, 1H confirm, 15M entry (default)
+        mode = request.query_params.get("mode", "swing").lower().strip()
+        result = MultiTimeframeService.analyze_top_down(symbol, mode=mode)
         return Response(result)
 
 
