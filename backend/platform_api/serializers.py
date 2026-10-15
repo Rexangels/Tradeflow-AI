@@ -36,6 +36,11 @@ class BacktestSettingsSerializer(serializers.Serializer):
     feeRate = serializers.FloatField(min_value=0, max_value=0.02, default=0.001)
     slippageRate = serializers.FloatField(min_value=0, max_value=0.02, default=0.0005)
     positionSizeFraction = serializers.FloatField(min_value=0.05, max_value=1, default=0.95)
+    spreadPips = serializers.FloatField(min_value=0, max_value=100, required=False)
+    riskPct = serializers.FloatField(min_value=0.0005, max_value=0.05, default=0.01)
+    atrStopMultiplier = serializers.FloatField(min_value=0.5, max_value=5.0, default=1.5)
+    rewardRiskMultiple = serializers.FloatField(min_value=1.0, max_value=5.0, default=2.0)
+    allowShort = serializers.BooleanField(default=True)
 
 
 class BacktestRequestSerializer(serializers.Serializer):

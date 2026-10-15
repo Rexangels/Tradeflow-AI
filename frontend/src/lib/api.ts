@@ -260,6 +260,11 @@ export const api = {
       { method: "DELETE" },
     ),
   getTradingOrders: (limit = 50) => request<TradeLogItem[]>(`/trading/orders?limit=${limit}`),
+  reviewJournalTrade: (tradeId: string, payload: { followed_plan?: boolean | null; lesson_tag?: string; human_note?: string }) =>
+    request<{ success: boolean; id: string }>(`/trading/journal/${encodeURIComponent(tradeId)}/review`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   placeTradingOrder: (payload: {
     symbol: string;
     side: "buy" | "sell";

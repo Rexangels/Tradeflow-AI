@@ -66,6 +66,11 @@ export const backtestSettingsSchema = z.object({
   feeRate: z.number().min(0).max(0.02).default(0.001),
   slippageRate: z.number().min(0).max(0.02).default(0.0005),
   positionSizeFraction: z.number().min(0.05).max(1).default(0.95),
+  spreadPips: z.number().min(0).max(100).optional(),
+  riskPct: z.number().min(0.0005).max(0.05).default(0.01),
+  atrStopMultiplier: z.number().min(0.5).max(5).default(1.5),
+  rewardRiskMultiple: z.number().min(1).max(5).default(2),
+  allowShort: z.boolean().default(true),
 });
 export type BacktestSettings = z.infer<typeof backtestSettingsSchema>;
 
@@ -83,6 +88,10 @@ export const backtestRequestSchema = z.object({
     feeRate: 0.001,
     slippageRate: 0.0005,
     positionSizeFraction: 0.95,
+    riskPct: 0.01,
+    atrStopMultiplier: 1.5,
+    rewardRiskMultiple: 2,
+    allowShort: true,
   }),
 });
 export type BacktestRequest = z.infer<typeof backtestRequestSchema>;
@@ -415,10 +424,16 @@ export type DashboardSnapshot = z.infer<typeof dashboardSnapshotSchema>;
 
 export const DEFAULT_STRATEGIES: Strategy[] = [
   {
-    id: "trend-following",
-    name: "Trend Following",
-    description: "EMA crossover entries with momentum-aware exits.",
+    id: "trend-breakout-v1",
+    name: "Trend Breakout v1",
+    description: "H4 bias -> H1 confirm -> M15 trigger with ATR stops, regime gate, next-bar fills.",
     enabled: true,
+  },
+  {
+    id: "trend-following",
+    name: "Trend Following (legacy)",
+    description: "EMA crossover entries with momentum-aware exits. Kept for backward compatibility.",
+    enabled: false,
   },
   {
     id: "mean-reversion",
@@ -522,6 +537,19 @@ export const tradeLogSchema = z.object({
   ai_reasoning: z.string(),
   mode: z.string(),
   created_at: z.string(),
+  strategy_version: z.string().optional(),
+  regime: z.string().optional(),
+  votes: z.record(z.unknown()).optional(),
+  session: z.string().optional(),
+  news_state: z.string().optional(),
+  spread_pips: z.number().nullable().optional(),
+  fee_paid: z.number().nullable().optional(),
+  mfe_r: z.number().nullable().optional(),
+  mae_r: z.number().nullable().optional(),
+  exit_reason: z.string().optional(),
+  followed_plan: z.boolean().nullable().optional(),
+  lesson_tag: z.string().optional(),
+  human_note: z.string().optional(),
 });
 export type TradeLogItem = z.infer<typeof tradeLogSchema>;
 

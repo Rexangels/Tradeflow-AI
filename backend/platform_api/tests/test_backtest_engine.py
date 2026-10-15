@@ -150,10 +150,19 @@ class BacktestEngineTests(SimpleTestCase):
     @patch("platform_api.services.backtests._should_sell")
     @patch("platform_api.services.backtests._should_buy")
     def test_engine_never_duplicates_position_entries_for_signal_sequence(self, mock_should_buy, mock_should_sell):
+        # Legacy engine path: explicitly use trend-following only so mocks apply.
+        legacy_agent = {
+            **DEFAULT_AGENT,
+            "strategies": [
+                {"id": "trend-breakout-v1", "name": "Trend Breakout v1", "description": "x", "enabled": False},
+                {"id": "trend-following", "name": "Trend Following", "description": "x", "enabled": True},
+                {"id": "mean-reversion", "name": "Mean Reversion", "description": "x", "enabled": False},
+            ],
+        }
         payload = {
             "symbol": "BTCUSDT",
             "timeframe": "1h",
-            "agent": DEFAULT_AGENT,
+            "agent": legacy_agent,
             "settings": {
                 "startingBalance": 10000,
                 "feeRate": 0.001,

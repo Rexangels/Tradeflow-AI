@@ -131,10 +131,12 @@ class OrderExecutionService:
         agent: Optional[Agent] = None,
         ai_reasoning: str = "",
         bypass_risk: bool = False,
+        signal_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
-        Executes a real order via Alpaca after validating through RiskManager.
-        Logs the trade to TradeLog.
+        Executes a real order after validating through RiskManager.
+        AI/auto paths must pass signal_id so TradeLog links to AISignal.
+        bypass_risk is manual-desk only and is loudly logged.
         """
         norm_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
@@ -152,7 +154,12 @@ class OrderExecutionService:
             }
         curr_price = limit_price or float(market_candles[-1]["close"])
 
-        # 1. Risk Evaluation
+        # 1b. Journal snapshot (best-effort, never blocks the order).
+        journal = cls._journal_snapshot(disp_sym)
+
+        # 1. Risk Evaluation (AI is narrator/watchdog: it can never bypass this).
+        if bypass_risk:
+            logger.warning("Order bypass_risk=True (manual desk only): %s %s qty=%s", symbol, side, qty)
         if not bypass_risk:
             assessment = RiskManager.assess_order(
                 symbol=disp_sym,
@@ -221,7 +228,14 @@ class OrderExecutionService:
                 status="open",
                 ai_reasoning=ai_reasoning or assessment.get("reason", ""),
                 mode="mt5_demo",
+                strategy_version="trend-breakout-v1/1.0.0",
+                regime=journal.get("regime", ""),
+                votes=journal.get("votes", {}),
+                session=journal.get("session", ""),
+                news_state=journal.get("news_state", ""),
+                spread_pips=journal.get("spread_pips"),
             )
+            cls._link_signal(signal_id, trade_log)
             return {
                 "success": True,
                 "broker": "MetaTrader 5 (Exness Demo)",
@@ -291,7 +305,14 @@ class OrderExecutionService:
             status="open" if status in {"filled", "partially_filled", "new", "accepted", "submitted"} else status,
             ai_reasoning=ai_reasoning or assessment.get("reason", ""),
             mode=client.mode,
+            strategy_version="trend-breakout-v1/1.0.0",
+            regime=journal.get("regime", ""),
+            votes=journal.get("votes", {}),
+            session=journal.get("session", ""),
+            news_state=journal.get("news_state", ""),
+            spread_pips=journal.get("spread_pips"),
         )
+        cls._link_signal(signal_id, trade_log)
 
         return {
             "success": True,
@@ -309,6 +330,93 @@ class OrderExecutionService:
         }
 
     @classmethod
+    def _journal_snapshot(cls, disp_sym: str) -> dict:
+        """Best-effort regime/votes/session/news/spread at fill time. Never raises."""
+        snap: dict = {"regime": "", "votes": {}, "session": "", "news_state": "", "spread_pips": None}
+        try:
+            from .economic_calendar import EconomicCalendarService
+            from .market_data import get_forex_quote
+            from .multi_timeframe import MultiTimeframeService
+            from .session_filter import SessionFilterService
+
+            mtf = MultiTimeframeService.analyze_top_down(disp_sym)
+            snap["regime"] = mtf.get("macro_bias_4h", "")
+            snap["votes"] = {
+                "quality": mtf.get("confluence_quality"),
+                "score": mtf.get("composite_score"),
+                "side": mtf.get("suggested_side"),
+                "h1": mtf.get("h1", {}).get("direction"),
+                "m15": mtf.get("m15", {}).get("direction"),
+            }
+            blocked, _, _ = EconomicCalendarService.is_news_blocked(disp_sym)
+            snap["news_state"] = "BLOCKED" if blocked else "CLEAR"
+            snap["session"] = SessionFilterService.get_current_session_info().get("primary_session", "")
+            snap["spread_pips"] = get_forex_quote(disp_sym).get("spread_pips")
+        except Exception as exc:
+            logger.warning("Journal snapshot failed for %s: %s", disp_sym, exc)
+        return snap
+
+    @classmethod
+    def _excursion_for_trade(cls, trade) -> dict:
+        """MFE/MAE in R from entry to now using 1h bars. Best-effort."""
+        try:
+            from .market_data import get_candles, normalize_symbol
+
+            if not trade.entry_price or not trade.stop_loss:
+                return {}
+            sl_dist = abs(trade.entry_price - trade.stop_loss)
+            if sl_dist <= 0:
+                return {}
+            candles = get_candles(normalize_symbol(trade.symbol), timeframe="1h", limit=500)
+            bars = [c for c in candles if c.get("time", "") >= trade.created_at.isoformat()]
+            if not bars:
+                bars = candles[-24:]
+            if trade.side.lower() == "buy":
+                mfe = max(float(b["high"]) - trade.entry_price for b in bars)
+                mae = min(float(b["low"]) - trade.entry_price for b in bars)
+            else:
+                mfe = max(trade.entry_price - float(b["low"]) for b in bars)
+                mae = min(trade.entry_price - float(b["high"]) for b in bars)
+            return {"mfe_r": round(mfe / sl_dist, 2), "mae_r": round(mae / sl_dist, 2)}
+        except Exception as exc:
+            logger.warning("Excursion calc failed for trade %s: %s", getattr(trade, "id", "?"), exc)
+            return {}
+
+    @classmethod
+    def review_trade(cls, trade_id: str, followed_plan=None, lesson_tag: str = "", human_note: str = "") -> dict:
+        from platform_api.models import LESSON_TAG_CHOICES
+
+        allowed = {c[0] for c in LESSON_TAG_CHOICES}
+        trade = TradeLog.objects.filter(id=trade_id).first()
+        if not trade:
+            return {"success": False, "error": "Trade not found."}
+        if lesson_tag and lesson_tag not in allowed:
+            return {"success": False, "error": f"Invalid lesson_tag. Allowed: {sorted(allowed)}"}
+        if followed_plan is not None:
+            trade.followed_plan = bool(followed_plan)
+        if lesson_tag:
+            trade.lesson_tag = lesson_tag
+        if human_note:
+            trade.human_note = human_note[:140]
+        trade.save()
+        return {"success": True, "id": str(trade.id)}
+
+    @classmethod
+    def _link_signal(cls, signal_id: Optional[str], trade_log) -> None:
+        if not signal_id:
+            return
+        try:
+            from platform_api.models import AISignal
+
+            sig = AISignal.objects.filter(id=signal_id).first()
+            if sig:
+                sig.acted_on = True
+                sig.trade_log = trade_log
+                sig.save(update_fields=["acted_on", "trade_log", "updated_at"])
+        except Exception as exc:
+            logger.warning("Could not link signal %s to trade %s: %s", signal_id, trade_log.id, exc)
+
+    @classmethod
     def _cancel_orders_for_symbol(cls, symbol: str) -> list[str]:
         """
         Cancel all open orders for a given symbol so that shares are freed
@@ -322,7 +430,7 @@ class OrderExecutionService:
             return []
 
     @classmethod
-    def close_position(cls, symbol: str, qty: Optional[float] = None) -> dict[str, Any]:
+    def close_position(cls, symbol: str, qty: Optional[float] = None, exit_reason: str = "manual") -> dict[str, Any]:
         """
         Liquidates an open position in Alpaca and updates TradeLog.
 
@@ -353,13 +461,16 @@ class OrderExecutionService:
 
             if target_ticket:
                 close_res = mt5_client.close_position(target_ticket)
-                # Update all matching open logs – TradeLog uses only exit_price (no exit_time field)
-                TradeLog.objects.filter(
-                    symbol=disp_sym, status="open"
-                ).update(
-                    status="closed",
-                    exit_price=close_res.get("closed_price") or 0.0,
-                )
+                # Update all matching open logs with exit + excursion (same round trip, no new row).
+                for t in TradeLog.objects.filter(symbol=disp_sym, status="open"):
+                    t.status = "closed"
+                    t.exit_price = close_res.get("closed_price") or 0.0
+                    t.exit_reason = exit_reason
+                    exc = cls._excursion_for_trade(t)
+                    if exc:
+                        t.mfe_r = exc.get("mfe_r")
+                        t.mae_r = exc.get("mae_r")
+                    t.save()
                 return close_res
             return {"success": False, "error": f"No open MT5 position found for {symbol}"}
 
@@ -396,16 +507,21 @@ class OrderExecutionService:
                     ),
                 }
 
-        # Update open trade logs for this symbol
+        # Update open trade logs for this symbol (same row, no duplicate leg).
         open_trades = TradeLog.objects.filter(symbol=disp_sym, status="open")
         current_px = latest_price(clean_sym)
         for t in open_trades:
             t.status = "closed"
             t.exit_price = current_px
+            t.exit_reason = exit_reason
             if t.entry_price:
                 # Realized P&L calculation
                 multiplier = 1 if t.side.lower() == "buy" else -1
                 t.realized_pnl = round((current_px - t.entry_price) * t.qty * multiplier, 2)
+            exc = cls._excursion_for_trade(t)
+            if exc:
+                t.mfe_r = exc.get("mfe_r")
+                t.mae_r = exc.get("mae_r")
             t.save()
 
         return {
@@ -452,6 +568,19 @@ class OrderExecutionService:
                 "ai_reasoning": t.ai_reasoning,
                 "mode": t.mode,
                 "created_at": t.created_at.isoformat(),
+                "strategy_version": t.strategy_version,
+                "regime": t.regime,
+                "votes": t.votes,
+                "session": t.session,
+                "news_state": t.news_state,
+                "spread_pips": t.spread_pips,
+                "fee_paid": t.fee_paid,
+                "mfe_r": t.mfe_r,
+                "mae_r": t.mae_r,
+                "exit_reason": t.exit_reason,
+                "followed_plan": t.followed_plan,
+                "lesson_tag": t.lesson_tag,
+                "human_note": t.human_note,
             }
             for t in logs
         ]

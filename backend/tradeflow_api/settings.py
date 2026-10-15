@@ -125,6 +125,8 @@ CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 
 DJANGO_ADMIN_EMAIL = os.getenv("DJANGO_ADMIN_EMAIL", "admin@tradeflow.local")
 DJANGO_ADMIN_PASSWORD = os.getenv("DJANGO_ADMIN_PASSWORD", "change-me")
+ECON_CALENDAR_URL = os.getenv("ECON_CALENDAR_URL", "https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+ECON_CALENDAR_TIMEOUT_SECONDS = int(os.getenv("ECON_CALENDAR_TIMEOUT_SECONDS", "10"))
 BINANCE_API_BASE_URL = os.getenv("BINANCE_API_BASE_URL", "https://api.binance.com")
 MARKET_DATA_CACHE_TTL_SECONDS = int(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", "60"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

@@ -198,29 +198,46 @@ export function MarketDataPage() {
               </div>
 
               <div className="mt-3.5 space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                {(chatMutation.data?.messages ?? []).length > 0 ? (
-                  chatMutation.data?.messages.map((entry) => (
+                {(() => {
+                  const all = chatMutation.data?.messages ?? [];
+                  const shown = all.filter((m) => m.role !== "tool");
+                  const tools = all.filter((m) => m.role === "tool");
+                  return shown.length > 0 ? (
+                    <>
+                      {tools.length > 0 && (
+                        <details className="rounded-xl border border-slate-800/60 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
+                          <summary className="cursor-pointer font-semibold uppercase tracking-wider text-[10px]">
+                            Market data used ({tools.length}) — expand
+                          </summary>
+                          {tools.map((t) => (
+                            <p key={t.id} className="whitespace-pre-wrap border-t border-slate-800/60 mt-1.5 pt-1.5">
+                              {t.content}
+                            </p>
+                          ))}
+                        </details>
+                      )}
+                      {shown.map((entry) => (
                     <div
                       key={entry.id}
                       className={`rounded-xl p-3 text-xs leading-relaxed ${
                         entry.role === "user"
                           ? "bg-cyan-950/40 border border-cyan-800/40 text-cyan-100 ml-4"
-                          : entry.role === "tool"
-                          ? "bg-slate-900/40 border border-slate-800/60 text-slate-400 text-[11px]"
                           : "bg-slate-900/80 border border-slate-800 text-slate-200 mr-2"
                       }`}
                     >
                       <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                        {entry.role === "user" ? "You" : entry.role === "tool" ? "Alpaca Context" : "TradeFlow AI"}
+                        {entry.role === "user" ? "You" : "TradeFlow AI"}
                       </p>
                       <p className="whitespace-pre-wrap">{entry.content}</p>
                     </div>
-                  ))
-                ) : (
-                  <div className="rounded-xl border border-dashed border-slate-800/80 p-4 text-xs text-slate-400 text-center">
-                    Ask for a technical confluence read on {symbol}, key support/resistance levels, or risk limits.
-                  </div>
-                )}
+                      ))}
+                    </>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-800/80 p-4 text-xs text-slate-400 text-center">
+                      Ask for a technical confluence read on {symbol}, key support/resistance levels, or risk limits.
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

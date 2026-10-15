@@ -1,9 +1,15 @@
 DEFAULT_STRATEGIES = [
     {
-        "id": "trend-following",
-        "name": "Trend Following",
-        "description": "EMA crossover entries with momentum-aware exits.",
+        "id": "trend-breakout-v1",
+        "name": "Trend Breakout v1",
+        "description": "H4 bias -> H1 confirm -> M15 trigger with ATR stops, regime gate, next-bar fills.",
         "enabled": True,
+    },
+    {
+        "id": "trend-following",
+        "name": "Trend Following (legacy)",
+        "description": "EMA crossover entries with momentum-aware exits. Kept for backward compatibility.",
+        "enabled": False,
     },
     {
         "id": "mean-reversion",

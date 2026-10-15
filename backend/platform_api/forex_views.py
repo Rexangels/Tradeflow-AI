@@ -300,6 +300,23 @@ class TradingOrderDetailView(APIView):
         return Response(res)
 
 
+class TradingJournalReviewView(APIView):
+    """Human review: exactly 2 inputs + 140-char note. Machine fields immutable."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def put(self, request, trade_id):
+        res = OrderExecutionService.review_trade(
+            trade_id,
+            followed_plan=request.data.get("followed_plan"),
+            lesson_tag=request.data.get("lesson_tag", ""),
+            human_note=request.data.get("human_note", ""),
+        )
+        if not res.get("success"):
+            return Response(res, status=400)
+        return Response(res)
+
+
 class RiskRulesView(APIView):
     permission_classes = [IsTradeflowAdmin]
 
@@ -397,7 +414,13 @@ class EconomicCalendarView(APIView):
         if symbol:
             is_blocked, reason, ev = EconomicCalendarService.is_news_blocked(symbol)
             shield_status = {"symbol": symbol, "is_blocked": is_blocked, "reason": reason, "event": ev}
-        return Response({"events": events, "shield_status": shield_status})
+        return Response(
+            {
+                "events": events,
+                "shield_status": shield_status,
+                "calendar": EconomicCalendarService.get_calendar_status(),
+            }
+        )
 
 
 class TradingSessionsView(APIView):

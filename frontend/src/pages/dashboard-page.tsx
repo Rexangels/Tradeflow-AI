@@ -398,9 +398,25 @@ export function DashboardPage() {
                 {((): React.ReactNode => {
                   const liveMessages = chatMutation.data?.messages ?? [];
                   const historyMessages = chatHistoryQuery.data?.messages ?? [];
-                  const displayMessages = liveMessages.length > 0 ? liveMessages : historyMessages;
+                  const allMessages = liveMessages.length > 0 ? liveMessages : historyMessages;
+                  const displayMessages = allMessages.filter((m) => m.role !== "tool");
+                  const toolMessages = allMessages.filter((m) => m.role === "tool");
                   return (
                     <div ref={chatScrollRef} className="mt-4 space-y-3 max-h-[380px] overflow-y-auto pr-1">
+                      {toolMessages.length > 0 && (
+                        <details className="rounded-xl border border-slate-800/60 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
+                          <summary className="cursor-pointer font-semibold uppercase tracking-wider text-[10px] hover:text-slate-200">
+                            Market data used ({toolMessages.length} checks) — expand
+                          </summary>
+                          <div className="mt-2 space-y-1.5 max-h-40 overflow-y-auto">
+                            {toolMessages.map((t) => (
+                              <p key={t.id} className="whitespace-pre-wrap border-t border-slate-800/60 pt-1.5">
+                                {t.content}
+                              </p>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                       {displayMessages.length > 0 ? (
                         displayMessages.map((entry) => (
                           <div
@@ -408,16 +424,12 @@ export function DashboardPage() {
                             className={`rounded-2xl p-4 text-xs leading-relaxed ${
                               entry.role === "user"
                                 ? "bg-cyan-950/40 border border-cyan-800/40 text-cyan-100 ml-6"
-                                : entry.role === "tool"
-                                ? "bg-slate-900/40 border border-slate-800/60 text-slate-400 text-[11px]"
                                 : "bg-slate-900/80 border border-slate-800 text-slate-100 mr-4"
                             }`}
                           >
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
                               {entry.role === "user" ? (
                                 "You"
-                              ) : entry.role === "tool" ? (
-                                "Market & Alpaca Context Engine"
                               ) : (
                                 <>
                                   <Bot className="h-3 w-3 text-cyan-400 inline" /> TradeFlow AI

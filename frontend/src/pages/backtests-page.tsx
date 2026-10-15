@@ -94,6 +94,10 @@ export function BacktestsPage() {
           feeRate: 0.001,
           slippageRate: 0.0005,
           positionSizeFraction: 0.95,
+          riskPct: 0.01,
+          atrStopMultiplier: 1.5,
+          rewardRiskMultiple: 2,
+          allowShort: true,
         },
       });
     },

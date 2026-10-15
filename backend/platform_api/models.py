@@ -153,6 +153,30 @@ class RiskRule(TimeStampedModel):
         return self.key
 
 
+EXIT_REASON_CHOICES = (
+    ("", "unknown"),
+    ("sl", "stop-loss"),
+    ("tp", "take-profit"),
+    ("opposite", "opposite-signal"),
+    ("manual", "manual-close"),
+    ("news", "news-guard"),
+    ("session", "session-end"),
+    ("eod", "end-of-data"),
+)
+
+LESSON_TAG_CHOICES = (
+    ("", "none"),
+    ("good-win", "good-win"),
+    ("good-loss", "good-loss"),
+    ("chased", "chased-entry"),
+    ("early-m15", "early-m15"),
+    ("news-slip", "news-slip"),
+    ("spread-wide", "spread-widened"),
+    ("sized-big", "sized-too-big"),
+    ("no-setup", "no-setup"),
+)
+
+
 class TradeLog(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     alpaca_order_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
@@ -168,6 +192,20 @@ class TradeLog(TimeStampedModel):
     status = models.CharField(max_length=20, default="open")  # open | closed | cancelled
     ai_reasoning = models.TextField(blank=True)
     mode = models.CharField(max_length=10, default="paper")  # paper | live
+    # Journal v2: structured, queryable, migration-safe (all nullable/default).
+    strategy_version = models.CharField(max_length=64, default="trend-breakout-v1/1.0.0")
+    regime = models.CharField(max_length=32, default="", blank=True)
+    votes = models.JSONField(default=dict, blank=True)
+    session = models.CharField(max_length=64, default="", blank=True)
+    news_state = models.CharField(max_length=16, default="", blank=True)  # CLEAR | BLOCKED
+    spread_pips = models.FloatField(null=True, blank=True)
+    fee_paid = models.FloatField(null=True, blank=True)
+    mfe_r = models.FloatField(null=True, blank=True)
+    mae_r = models.FloatField(null=True, blank=True)
+    exit_reason = models.CharField(max_length=16, default="", blank=True)
+    followed_plan = models.BooleanField(null=True, blank=True)
+    lesson_tag = models.CharField(max_length=16, default="", blank=True)
+    human_note = models.CharField(max_length=140, default="", blank=True)
 
     def __str__(self):
         return f"{self.side.upper()} {self.symbol} {self.qty} ({self.status})"

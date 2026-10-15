@@ -53,12 +53,103 @@ class ToolContext:
     content: str
 
 
+WATCH_KEYWORDS = (
+    "set a timer", "set timer", "track when", "track this", "track it",
+    "alert me", "notify me", "remind me", "watch this", "watch the",
+    "keep watching", "monitor this", "let me know when",
+)
+
+
+def _handle_watch_intents(user, thread: Any, message: str) -> Optional[dict[str, Any]]:
+    """Chat-created tracking watches. Feeds the scan_markets scheduler.
+
+    Triggers on: 'set a timer', 'track when we should trade it', 'alert me', ...
+    Stores in AppSetting(tracking_watches) + ensures ForexPairConfig watched.
+    """
+    msg = (message or "").lower().strip()
+    if not any(k in msg for k in WATCH_KEYWORDS):
+        return None
+    # 'stop tracking X' / 'cancel watch' removes instead of creating.
+    is_remove = any(k in msg for k in ("stop tracking", "cancel watch", "remove watch", "untrack"))
+
+    symbol = _guess_symbol_from_text(message)
+    if not symbol and thread is not None:
+        try:
+            symbol = _get_last_discussed_symbol(thread)
+        except Exception:
+            symbol = None
+    if not symbol:
+        return {
+            "action": "watch_needs_symbol",
+            "summary": "Tell me which pair to track (e.g. 'track GBP/USD') and I'll watch its M15 flip.",
+        }
+
+    from platform_api.models import AppSetting, ForexPairConfig
+
+    disp_sym = format_display_symbol(symbol)
+    try:
+        raw = AppSetting.objects.filter(key="tracking_watches").first()
+        watches = dict(raw.value) if raw and isinstance(raw.value, dict) else {}
+    except Exception:
+        watches = {}
+
+    if is_remove:
+        watches.pop(disp_sym, None)
+        AppSetting.objects.update_or_create(key="tracking_watches", defaults={"value": watches})
+        return {
+            "action": "watch_removed",
+            "symbol": disp_sym,
+            "summary": f"Stopped tracking {disp_sym}. It will no longer raise flip alerts.",
+        }
+
+    watches[disp_sym] = {
+        "condition": "M15 aligns with H4/H1 into full TRADEABLE (False->True flip)",
+        "created_at": timezone.now().isoformat(),
+        "status": "watching",
+    }
+    AppSetting.objects.update_or_create(key="tracking_watches", defaults={"value": watches})
+    # Ensure the scheduler scans it even if the user never added it to the watchlist.
+    try:
+        pair, _ = ForexPairConfig.objects.get_or_create(symbol=disp_sym)
+        if not pair.is_watched:
+            pair.is_watched = True
+            pair.save(update_fields=["is_watched", "updated_at"])
+    except Exception as exc:
+        logger.warning("Could not mark %s watched: %s", disp_sym, exc)
+
+    return {
+        "action": "watch_created",
+        "symbol": disp_sym,
+        "summary": (
+            f"Tracking {disp_sym}: condition = M15 aligns with H4/H1 into full TRADEABLE. "
+            f"Scheduler checks every 15 min on M15 close and posts to AI Signals on a False->True flip."
+        ),
+    }
+
+
 def handle_chat(user, payload: dict[str, Any]) -> dict[str, Any]:
     thread = _resolve_thread(user, payload)
     user_msg = payload["message"]
     ChatMessage.objects.create(thread=thread, role="user", content=user_msg)
 
-    # 1. Check for explicit trade execution intent (e.g., "buy EUR/USD", "close position", "let buy it")
+    # 1a. Check for tracking/watch intent first (e.g. "set a timer to track GBP/USD")
+    watch_result = _handle_watch_intents(user, thread, user_msg)
+    if watch_result and watch_result.get("action") not in ("watch_needs_symbol",):
+        ChatMessage.objects.create(
+            thread=thread,
+            role="tool",
+            content=watch_result["summary"],
+            metadata={"tool": "watch_tracker", "result": watch_result},
+        )
+    elif watch_result:
+        ChatMessage.objects.create(
+            thread=thread,
+            role="tool",
+            content=watch_result["summary"],
+            metadata={"tool": "watch_tracker", "result": watch_result},
+        )
+
+    # 1b. Check for explicit trade execution intent (e.g., "buy EUR/USD", "close position", "let buy it")
     execution_result = _handle_trade_intents(user, thread, user_msg)
     if execution_result:
         ChatMessage.objects.create(
@@ -70,6 +161,8 @@ def handle_chat(user, payload: dict[str, Any]) -> dict[str, Any]:
 
     # 2. Collect rich market, technical, risk, and account contexts
     contexts = _collect_contexts(user, payload, thread=thread)
+    if watch_result:
+        contexts.insert(0, ToolContext(name="watch_tracker", content=watch_result["summary"]))
     if execution_result:
         contexts.insert(0, ToolContext(name="order_execution_result", content=execution_result["summary"]))
 
@@ -387,6 +480,53 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
             }
         return {"action": "close_position", "summary": f"Could not close position for {target_sym}: {res.get('error')}"}
 
+    # Bare confirmation ("proceed", "yes, do it", "confirm") after a proposal.
+    # The old bot hallucinated <execute_trade> tags here and placed nothing.
+    # Resolve last symbol + current MTF side and route a REAL order, or say
+    # plainly that nothing was placed.
+    if re.match(r"^(proceed|confirm|yes|do it|go ahead|place it|take it|execute it)\b", msg):
+        last_sym = _guess_symbol_from_text(message) or _get_last_discussed_symbol(chat_thread) or "BTC/USD"
+        disp_sym = format_display_symbol(last_sym)
+        from .multi_timeframe import MultiTimeframeService
+
+        try:
+            mtf = MultiTimeframeService.analyze_top_down(disp_sym)
+        except Exception as exc:
+            return {"action": "confirm_failed", "summary": f"No order placed: market read failed ({exc})."}
+        side = (mtf.get("suggested_side") or "").lower()
+        if not side or not mtf.get("is_aligned"):
+            return {
+                "action": "confirm_no_setup",
+                "summary": (
+                    f"No order placed: {disp_sym} is {mtf.get('confluence_quality', 'not aligned')} "
+                    f"({mtf.get('rejection_reason') or 'no M15 confirmation'}). "
+                    f"Say e.g. 'sell 0.01 {disp_sym}' to force a directional ticket anyway, or set a watch."
+                ),
+            }
+        active_broker = OrderExecutionService.get_active_broker()
+        qty = 0.01 if active_broker == "mt5" else 1000.0
+        res = OrderExecutionService.execute_order(
+            symbol=disp_sym, side=side, qty=qty,
+            stop_loss=mtf.get("stop_loss"), take_profit=mtf.get("take_profit"),
+            agent=agent, ai_reasoning=f"Chat confirmation ('{message}') on aligned {disp_sym}.",
+        )
+        if res.get("success"):
+            return {
+                "action": "execute_order",
+                "summary": (
+                    f"PLACED {side.upper()} {res.get('volume', qty)} of {disp_sym} on "
+                    f"{res.get('broker', 'broker')} at ~{res.get('entry_price')}. "
+                    f"SL {res.get('stop_loss')}, TP {res.get('take_profit')}. "
+                    f"Ticket/Order #{res.get('ticket') or res.get('order_id')}."
+                ),
+                "details": res,
+            }
+        return {
+            "action": "execute_order_rejected",
+            "summary": f"No order placed: {res.get('error')}",
+            "details": res,
+        }
+
     # Guard against pure inquiry / analytical phrases so we don't accidentally execute when user asks questions
     inquiry_phrases = (
         "see if", "check if", "can we", "could we", "should we", "is it good",
@@ -679,6 +819,38 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
                 )
             )
 
+            # Timeframe-specific view: if the user explicitly asks about 1H
+            # (or intraday), also compute the 1H-anchored intraday read so the
+            # reply can contrast "1H alone says X" vs "full swing system says Y"
+            # instead of repeating the same WAITING verdict twice.
+            wants_single_tf = any(
+                k in message
+                for k in ("1h", "1 hour", "one hour", "intraday", "hourly", "go short", "go long")
+            )
+            if wants_single_tf:
+                try:
+                    intra = MultiTimeframeService.analyze_top_down(target_sym, mode="intraday")
+                    contexts.append(
+                        ToolContext(
+                            name="requested_timeframe_view",
+                            content=(
+                                f"User asked about the lower-timeframe / 1H view for {target_sym}. "
+                                f"Intraday 1H bias: {intra.get('intraday_bias_1h')} "
+                                f"(1H {intra['h1']['direction']}, RSI {intra['h1']['rsi']}). "
+                                f"M15 trigger: {intra['m15']['direction']} (RSI {intra['m15']['rsi']}). "
+                                f"Intraday alignment: {intra['confluence_quality']} "
+                                f"(score {intra['composite_score']}/100, aligned={intra['is_aligned']}, "
+                                f"side={intra['suggested_side']}). "
+                                f"4H context (no veto in intraday mode): {intra.get('macro_bias_4h')}. "
+                                f"{intra.get('h4_contra_warning') or ''} "
+                                f"Full swing verdict for contrast: {mtf['confluence_quality']} "
+                                f"(H4 {mtf['macro_bias_4h']}, aligned={mtf['is_aligned']})."
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(f"Intraday timeframe view failed: {exc}")
+
         except Exception as exc:
             contexts.append(ToolContext(name="market_status", content=f"Market analysis for {target_sym} unavailable: {exc}"))
 
@@ -733,9 +905,15 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
 
 
 def _generate_reply(thread: ChatThread, user_message: str, contexts: list[ToolContext]) -> str:
+    # Only user/assistant turns go into the prompt history. Tool dumps are
+    # already passed as Live Tool Context below; including them twice makes
+    # Gemini parrot the same numbers back verbatim.
+    history_msgs = (
+        thread.messages.exclude(role="tool").order_by("-created_at")[:6]
+    )
     history = "\n".join(
-        f"{message.role.upper()}: {message.content}"
-        for message in thread.messages.order_by("-created_at")[:8]
+        f"{m.role.upper()}: {m.content[:400]}"
+        for m in reversed(list(history_msgs))
     )
     tool_context = "\n".join(f"{context.name}: {context.content}" for context in contexts) or "No tool data needed."
     system_prompt = _system_prompt_for_contexts(contexts)
@@ -787,6 +965,14 @@ def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
     order_exec = next((c.content for c in contexts if c.name == "order_execution_result"), None)
     if order_exec:
         return f"### Order Execution Update\n\n{order_exec}"
+    watch = next((c.content for c in contexts if c.name == "watch_tracker"), None)
+    if watch:
+        mtf_ctx = next((c.content for c in contexts if c.name == "top_down_institutional_confluence"), None)
+        return (
+            f"### Tracking On\n\n{watch}\n\n"
+            f"Current state: {(mtf_ctx or 'waiting for alignment')[:400]}\n\n"
+            f"Keep this app open — the AI Signals feed polls every 10s and highlights the flip."
+        )
 
     quote_ctx = next((c.content for c in contexts if c.name == "forex_market_quote"), None)
     mtf_ctx = next((c.content for c in contexts if c.name == "top_down_institutional_confluence"), None)
@@ -795,14 +981,17 @@ def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
     broker_ctx = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
 
     if mtf_ctx:
+        # Concise fallback (used only when Gemini is unreachable). Do not echo
+        # the full tool strings — the UI already renders tool data separately.
+        tf_ctx = next((c.content for c in contexts if c.name == "requested_timeframe_view"), None)
+        tf_line = f"\n\n**Asked timeframe:** {tf_ctx[:400]}" if tf_ctx else ""
         return (
-            f"### TradeFlow Institutional Analysis\n\n"
-            f"**Market Context:** {quote_ctx or 'Live market quote active'}\n"
-            f"**Session & Liquidity:** {session_ctx or 'Standard session liquidity'}\n\n"
-            f"**Top-Down Confluence:**\n{mtf_ctx}\n\n"
-            f"**Economic Calendar Guardrail:**\n{news_ctx or 'News Shield Clear'}\n\n"
-            f"**Actionable Execution:**\n"
-            f"To automatically execute this trade on your active broker ({broker_ctx or 'MT5 Demo'}), simply reply: **'execute trade'** or **'buy 0.01 lot EUR/USD'**."
+            f"### TradeFlow Verdict\n\n"
+            f"{mtf_ctx[:500]}"
+            f"{tf_line}\n\n"
+            f"**Guardrails:** {(news_ctx or 'News Shield Clear')[:160]} | "
+            f"{(session_ctx or 'Standard session')[:160]}\n\n"
+            f"Reply **'execute trade'** to route to {broker_ctx or 'MT5 Demo'}."
         )
 
     account = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
@@ -820,19 +1009,33 @@ def _system_prompt_for_contexts(contexts: list[ToolContext]) -> str:
         "CAPABILITIES & BROKER ROUTING:\n"
         "1. Spot Forex (EUR/USD, GBP/USD, USD/JPY, etc.) and 24/7 Crypto (BTC/USD, ETH/USD, XRP/USD, LTC/USD, SOL/USD, etc.) are routed directly to MetaTrader 5 (Exness) supporting 0.01 micro-lot sizing and ultra-tight spreads.\n"
         "2. US Equities are routed to Alpaca Paper Trading.\n"
-        "3. You can AUTOMATICALLY EXECUTE trades directly when instructed by the user in the chat interface (e.g., 'buy 0.01 lot EUR/USD', 'buy 0.01 ETH/USD', 'execute trade', 'close BTC/USD').\n\n"
+        "3. You can AUTOMATICALLY EXECUTE trades directly when instructed by the user in the chat interface (e.g., 'buy 0.01 lot EUR/USD', 'buy 0.01 ETH/USD', 'execute trade', 'close BTC/USD').\n"
+        "4. You CAN set tracking watches. If a `watch_tracker` context is present, a watch was just created/removed in the backend — confirm it explicitly, state the pair + condition (M15 into full TRADEABLE False->True flip, checked every 15 min on M15 close, alert in AI Signals feed). Never say you cannot set timers.\n\n"
         "INSTITUTIONAL ANALYSIS FRAMEWORK:\n"
         "When analyzing any currency or crypto pair for a potential trade:\n"
-        "- Synthesize the live market data cleanly in professional Markdown (do NOT dump raw JSON or repeat tool prefixes).\n"
-        "- Present 4 clear, well-structured sections:\n"
-        "  1. **Market Snapshot & Session**: Bid/Ask, Spread, and active global liquidity session.\n"
-        "  2. **Top-Down Confluence (4H -> 1H -> 15M)**: State the 4H macro bias, 1H structure, and 15M trigger. Explicitly explain whether there is institutional alignment or a counter-trend trap.\n"
-        "  3. **Institutional Guardrails**: Status of High-Impact Red-Folder Economic News Shield and Session Rollover spread risk.\n"
-        "  4. **Actionable Trading Plan**: Clear YES or NO verdict on entering. If entering, specify Recommended Side (BUY/SELL), Entry Price, Protective Stop-Loss (strictly below entry for Buy, above for Sell), Take-Profit (minimum 1.5R - 2.0R), and Position Sizing (e.g. 0.01 lot).\n"
+        "- Synthesize ONCE in professional Markdown. Do NOT repeat the tool blocks verbatim — "
+        "the UI already shows raw tool data separately. State each number only once.\n"
+        "- Present 4 concise sections (keep the whole reply under ~220 words unless the user asks for detail):\n"
+        "  1. **Market Snapshot & Session**: Bid/Ask, Spread, session — one line.\n"
+        "  2. **Top-Down Confluence (4H -> 1H -> 15M)**: bias per timeframe + aligned or why blocked — two sentences max.\n"
+        "  3. **Institutional Guardrails**: News Shield + rollover — one line.\n"
+        "  4. **Actionable Trading Plan**: YES or NO verdict with side/entry/SL/TP/size only if YES.\n"
+        "- If a `requested_timeframe_view` context is present, the user asked about a single timeframe. "
+        "Lead with that timeframe's signal (e.g. '1H alone is SHORT'), then contrast with the full swing gate "
+        "(e.g. 'but the swing system stands down because M15 is neutral'). Never give the identical "
+        "WAITING paragraph twice — explain the difference and what would change your mind (e.g. 'M15 close "
+        "with RSI turning down through 50').\n"
+        "- Vary your phrasing across turns; do not reuse the previous reply's sentences.\n"
         "- Conclude with a clear instruction on how to execute: e.g. 'To execute this trade immediately on your Exness MT5 demo account, simply type: **\"execute trade\"** or **\"buy 0.01 ETH/USD\"**.'\n\n"
         "If an order execution was just performed (see order_execution_result context):\n"
         "- Announce the successful trade execution clearly with Ticket Number, Broker (Exness MT5), Fill Price, SL, and TP.\n"
         "- Confirm that position protection and risk guardrails are active.\n"
+        "EXECUTION HONESTY (hard rule, never break):\n"
+        "- NEVER output <execute_trade>, <order>, or any XML/tag execution syntax. Those tags place nothing.\n"
+        "- A real order exists ONLY when an `order_execution_result` context with a ticket/order_id is present. "
+        "Quote that ticket. If it is absent, state plainly 'No order placed' and why — never 'submitted', "
+        "'awaiting broker confirmation', or 'will notify you'.\n"
+        "- A bare 'proceed / yes / confirm' is handled server-side as a real confirmation; do not narrate a second placement.\n"
         "Always be concise, authoritative, and focused on capital preservation."
     )
 

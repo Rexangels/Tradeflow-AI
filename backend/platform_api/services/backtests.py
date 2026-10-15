@@ -25,6 +25,15 @@ WALK_FORWARD_TRAIN_FRACTION = 0.5
 WALK_FORWARD_TEST_FRACTION = 0.2
 
 
+def _enabled_strategy_ids(agent: dict) -> list[str]:
+    return [s.get("id", "") for s in agent.get("strategies", []) if s.get("enabled")]
+
+
+def _uses_trend_breakout(agent: dict) -> bool:
+    ids = _enabled_strategy_ids(agent)
+    return any(i in ("trend-breakout-v1", "trend-breakout") for i in ids)
+
+
 def run_backtest(payload: dict, candles: list[dict]) -> dict:
     validated_candles = validate_candles(candles)
     if len(validated_candles) < MIN_BACKTEST_CANDLES:
@@ -38,22 +47,62 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
 
     symbol = payload["symbol"].upper()
     timeframe = payload["timeframe"]
+    raw_settings = payload.get("settings", {}) or {}
     settings = {
-        "startingBalance": payload.get("settings", {}).get("startingBalance", 10000),
-        "feeRate": payload.get("settings", {}).get("feeRate", 0.001),
-        "slippageRate": payload.get("settings", {}).get("slippageRate", 0.0005),
-        "positionSizeFraction": payload.get("settings", {}).get("positionSizeFraction", 0.95),
+        "startingBalance": raw_settings.get("startingBalance", 10000),
+        "feeRate": raw_settings.get("feeRate", 0.001),
+        "slippageRate": raw_settings.get("slippageRate", 0.0005),
+        "positionSizeFraction": raw_settings.get("positionSizeFraction", 0.95),
+        # Realistic-execution extensions (all optional, backward compatible).
+        "spreadPips": raw_settings.get("spreadPips"),
+        "riskPct": raw_settings.get("riskPct", 0.01),
+        "atrStopMultiplier": raw_settings.get("atrStopMultiplier", 1.5),
+        "rewardRiskMultiple": raw_settings.get("rewardRiskMultiple", 2.0),
+        "allowShort": raw_settings.get("allowShort", True),
     }
     agent = payload["agent"].copy()
     agent["id"] = str(agent.get("id") or uuid4())
 
-    result = _simulate_backtest(symbol, timeframe, agent, settings, validated_candles)
-    walk_forward = _calculate_walk_forward(symbol, timeframe, agent, settings, validated_candles)
+    use_trend = _uses_trend_breakout(agent)
+    if use_trend:
+        result = _simulate_trend_breakout(symbol, timeframe, agent, settings, validated_candles)
+        strategy_version = "trend-breakout-v1/1.0.0"
+    else:
+        result = _simulate_backtest(symbol, timeframe, agent, settings, validated_candles)
+        strategy_version = "legacy/ema-bb-1.0"
+    walk_forward = _calculate_walk_forward(symbol, timeframe, agent, settings, validated_candles, use_trend=use_trend)
     model_analysis = analyze_model(validated_candles, timeframe, settings)
+    # Diagnostics: per-module robustness (trend engine only; legacy keeps prior shape).
+    diagnostics: dict = {"modules": _enabled_strategy_ids(agent)}
+    if use_trend:
+        closed_profits = [float(t.get("profit", 0)) for t in result.get("trades", []) if "profit" in t]
+        diagnostics["monteCarlo"] = _monte_carlo_summary(closed_profits)
+        diagnostics["sensitivity"] = _sensitivity_grid(symbol, timeframe, agent, settings, validated_candles)
+        diagnostics["excursion"] = result.get("excursionStats", {})
     warnings = list(walk_forward["warnings"])
+    if use_trend:
+        mc = diagnostics.get("monteCarlo", {})
+        if mc.get("available") and mc.get("probProfitable", 100) < 60:
+            warnings.append(f"Monte Carlo: only {mc['probProfitable']}% of resampled paths profitable — edge is fragile.")
+        sens = diagnostics.get("sensitivity", {})
+        if sens.get("available") and sens.get("fragile"):
+            warnings.append("Sensitivity grid: profit factor swings across adjacent ATR/RR cells — do not optimize, freeze rules first.")
+        exc = diagnostics.get("excursion", {})
+        if exc.get("count", 0) and exc.get("losersThatReachedPlus1R", 0) > exc.get("count", 0) * 0.3:
+            warnings.append(f"Excursion: {exc['losersThatReachedPlus1R']}/{exc['count']} losers reached +1R first — consider earlier partials, not wider stops.")
 
     if data_source in {"unknown", "mixed"}:
         warnings.append("Candle source is unknown or mixed; results are exploratory and not eligible for strategy promotion.")
+    if len(validated_candles) < 200:
+        warnings.append("Fewer than 200 candles: EMA200 macro bias is unstable; treat trend signals as exploratory.")
+    if result["metrics"]["totalTrades"] == 0:
+        warnings.append("No trades executed: strategy produced no aligned signals in this window.")
+    if use_trend and result.get("regimeStats"):
+        rs = result["regimeStats"]
+        warnings.append(
+            f"Regime gate: {rs.get('trendingBars',0)} trending bars, {rs.get('rangeBars',0)} range/chop bars blocked, "
+            f"{rs.get('blockedByRegime',0)} signals vetoed by consolidation."
+        )
 
     if walk_forward["available"] and walk_forward["averageTestExcessReturnPct"] < 0:
         warnings.append("Walk-forward test windows underperformed buy-and-hold on average.")
@@ -68,7 +117,9 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
         "candlesChecked": len(validated_candles),
         "isSorted": True,
         "dataSource": data_source,
+        "strategyVersion": strategy_version,
         "warnings": warnings,
+        "diagnostics": diagnostics,
     }
     result["walkForward"] = walk_forward
     result["modelAnalysis"] = model_analysis
@@ -241,7 +292,441 @@ def _simulate_backtest(symbol: str, timeframe: str, agent: dict, settings: dict,
     }
 
 
-def _calculate_walk_forward(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict]) -> dict:
+def _spread_half_cost(symbol: str, reference_price: float, spread_pips_override=None) -> float:
+    """Half-spread in price units. Crypto uses absolute units, FX uses pip size."""
+    from .trend_breakout import classify_symbol
+
+    spec = classify_symbol(symbol, reference_price)
+    if spread_pips_override is not None:
+        sp = float(spread_pips_override)
+    else:
+        try:
+            from .market_data import FOREX_SPREADS_PIPS
+            from .market_data import normalize_symbol as _norm
+
+            sp = float(FOREX_SPREADS_PIPS.get(_norm(symbol), 1.2))
+        except Exception:
+            sp = 1.2
+    if spec["is_crypto"]:
+        # For crypto, spreadPips is an absolute price spread (e.g. $2 on BTC).
+        return sp / 2.0
+    return (sp * spec["pip_size"]) / 2.0
+
+
+def _simulate_trend_breakout(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict]) -> dict:
+    """Realistic trend/breakout simulation. Same rules as the live scanner.
+
+    - Signal on completed bar i via trend_breakout.single_timeframe_signal
+    - Entry at NEXT bar open (no lookahead) with spread + slippage
+    - ATR stop (default 1.5x) and 2R target, intrabar SL-first handling
+    - Risk-based sizing: min(capital fraction, riskPct/SL distance)
+    - Longs + shorts (shorts optional via allowShort), fees on both legs
+    """
+    from .trend_breakout import STRATEGY_VERSION, classify_symbol, single_timeframe_signal
+
+    starting = float(settings.get("startingBalance", 10000))
+    fee_rate = float(settings.get("feeRate", 0.001))
+    slip = float(settings.get("slippageRate", 0.0005))
+    size_frac = float(settings.get("positionSizeFraction", 0.95))
+    risk_pct = float(settings.get("riskPct", 0.01))
+    atr_mult = float(settings.get("atrStopMultiplier", 1.5))
+    rr_mult = float(settings.get("rewardRiskMultiple", 2.0))
+    allow_short = bool(settings.get("allowShort", True))
+    spread_override = settings.get("spreadPips")
+
+    norm_sym = symbol.replace("/", "").replace("_", "").upper()
+    spec = classify_symbol(norm_sym, candles[-1]["close"])
+    decimals = spec["decimals"]
+    half_spread = _spread_half_cost(norm_sym, candles[-1]["close"], spread_override)
+
+    cash = starting
+    position = None  # {side: long|short, qty, entry, sl, tp, entry_fee, entry_time}
+    trades: list[dict] = []
+    equity_curve: list[dict] = []
+    bars_in_market = 0
+    closed_round_trips: list[dict] = []  # exit trades with profit, for metrics
+    trending_bars = 0
+    range_bars = 0
+    blocked_by_regime = 0
+
+    warmup = max(50, min(60, len(candles) - 1))
+    if len(candles) <= warmup + 1:
+        warmup = max(30, len(candles) - 2)
+
+    # Accounting model:
+    # - Long (spot proxy): cash is spent at entry, returned at exit.
+    #   Equity = cash + qty * current_price.
+    # - Short (CFD proxy): cash is NOT spent at entry (only entry fee is paid).
+    #   Notional must fit within cash*size_frac as a margin proxy.
+    #   Equity = cash + qty * (entry - current_price).
+
+    for sig_idx in range(warmup, len(candles) - 1):
+        exe_bar = candles[sig_idx + 1]
+        # Pure signal on completed bars only (no lookahead into exe_bar).
+        try:
+            sig = single_timeframe_signal(candles[: sig_idx + 1], symbol=norm_sym)
+        except Exception:
+            continue
+        if sig["regime"] == "trending":
+            trending_bars += 1
+        else:
+            range_bars += 1
+
+        exe_open = float(exe_bar["open"])
+        exe_high = float(exe_bar["high"])
+        exe_low = float(exe_bar["low"])
+
+        # 1) Manage open position on execution bar (SL-first, then TP).
+        if position is not None:
+            # Track excursion before exit checks (intrabar high/low).
+            if position["side"] == "long":
+                position["mfe"] = max(position.get("mfe", 0.0), exe_high - position["entry"])
+                position["mae"] = min(position.get("mae", 0.0), exe_low - position["entry"])
+            else:
+                position["mfe"] = max(position.get("mfe", 0.0), position["entry"] - exe_low)
+                position["mae"] = min(position.get("mae", 0.0), position["entry"] - exe_high)
+            exited = None
+            exit_reason = ""
+            if position["side"] == "long":
+                sl_hit = exe_low <= position["sl"]
+                tp_hit = exe_high >= position["tp"]
+                if sl_hit:
+                    exited = position["sl"] - half_spread - position["sl"] * slip
+                    exit_reason = f"stop-loss {atr_mult}x ATR (trend-breakout-v1 {STRATEGY_VERSION})"
+                elif tp_hit:
+                    exited = position["tp"] - half_spread - position["tp"] * slip
+                    exit_reason = f"take-profit {rr_mult}R (trend-breakout-v1 {STRATEGY_VERSION})"
+            else:
+                sl_hit = exe_high >= position["sl"]
+                tp_hit = exe_low <= position["tp"]
+                if sl_hit:
+                    exited = position["sl"] + half_spread + position["sl"] * slip
+                    exit_reason = f"stop-loss {atr_mult}x ATR (trend-breakout-v1 {STRATEGY_VERSION})"
+                elif tp_hit:
+                    exited = position["tp"] + half_spread + position["tp"] * slip
+                    exit_reason = f"take-profit {rr_mult}R (trend-breakout-v1 {STRATEGY_VERSION})"
+            # Opposite-signal exit at open (before SL/TP if both? SL takes precedence
+            # only if already hit; otherwise opposite signal closes at open).
+            opposite = (position["side"] == "long" and sig.get("side") == "sell") or (
+                position["side"] == "short" and sig.get("side") == "buy"
+            )
+            if exited is None and opposite:
+                if position["side"] == "long":
+                    exited = exe_open - half_spread - exe_open * slip
+                else:
+                    exited = exe_open + half_spread + exe_open * slip
+                exit_reason = f"opposite signal (trend-breakout-v1 {STRATEGY_VERSION})"
+            if exited is not None:
+                qty = position["qty"]
+                entry = position["entry"]
+                exit_notional = qty * exited
+                exit_fee = exit_notional * fee_rate
+                if position["side"] == "long":
+                    gross = (exited - entry) * qty
+                    cash += exit_notional - exit_fee  # return spent capital + P&L minus fee
+                    exit_type = "sell"
+                else:
+                    gross = (entry - exited) * qty
+                    # CFD short: cash was never spent; add net P&L minus fees.
+                    cash = cash + gross - exit_fee
+                    exit_type = "buy"
+                net = gross - exit_fee - position["entry_fee"]
+                sl_d = position.get("sl_dist") or abs(position["entry"] - position["sl"]) or 1.0
+                exit_trade = {
+                    "id": str(uuid4()),
+                    "type": exit_type,
+                    "price": _round(exited),
+                    "time": exe_bar["time"],
+                    "quantity": _round(qty, 8),
+                    "notional": _round(exit_notional),
+                    "feePaid": _round(exit_fee),
+                    "profit": _round(net),
+                    "reason": exit_reason,
+                    "mfe": _round(position.get("mfe", 0.0)),
+                    "mae": _round(position.get("mae", 0.0)),
+                    "mfeR": _round(position.get("mfe", 0.0) / sl_d) if sl_d else 0,
+                    "maeR": _round(position.get("mae", 0.0) / sl_d) if sl_d else 0,
+                }
+                trades.append(exit_trade)
+                closed_round_trips.append(exit_trade)
+                position = None
+
+        # 2) New entry at execution-bar open if flat and signal aligned.
+        if position is None:
+            side = sig.get("side")  # buy/sell or None (vetoed)
+            if side is None:
+                if sig.get("direction") in ("long", "short"):
+                    blocked_by_regime += 1
+                # equity mark
+                equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                continue
+            if side == "sell" and not allow_short:
+                equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                continue
+            atr_dist = float(sig.get("atr_distance") or 0.0)
+            # Re-scale ATR distance with configured multiplier (signal used default 1.5x).
+            # sig atr_distance already = max(atr*1.5, min). Rescale proportionally.
+            if atr_mult != 1.5 and atr_dist:
+                # Approximate: back out base then re-apply. base = dist/1.5 when dist > min.
+                atr_dist = atr_dist / 1.5 * atr_mult
+            if not atr_dist or atr_dist <= 0:
+                equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                continue
+            if side == "buy":
+                entry_px = exe_open + half_spread + exe_open * slip
+                sl = entry_px - atr_dist
+                tp = entry_px + atr_dist * rr_mult
+            else:
+                entry_px = exe_open - half_spread - exe_open * slip
+                sl = entry_px + atr_dist
+                tp = entry_px - atr_dist * rr_mult
+            if entry_px <= 0:
+                equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                continue
+            equity_now = cash  # flat, so equity == cash
+            risk_capital = equity_now * risk_pct
+            qty_risk = risk_capital / atr_dist if atr_dist else 0
+            qty_cap = (equity_now * size_frac) / entry_px if entry_px else 0
+            qty = min(qty_risk, qty_cap)
+            if qty <= 0:
+                equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                continue
+            notional = qty * entry_px
+            entry_fee = notional * fee_rate
+            if side == "buy":
+                if cash < notional + entry_fee or qty <= 0:
+                    equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                    continue
+                cash -= notional + entry_fee
+                entry_type = "buy"
+            else:
+                # Short CFD: require margin proxy, don't spend cash.
+                if notional > cash * size_frac:
+                    # Scale down to margin limit.
+                    qty = (cash * size_frac) / entry_px
+                    notional = qty * entry_px
+                    entry_fee = notional * fee_rate
+                if qty <= 0:
+                    equity_curve.append({"time": exe_bar["time"], "value": _round(cash)})
+                    continue
+                cash -= entry_fee  # pay entry fee only
+                entry_type = "sell"
+            position = {
+                "side": "long" if side == "buy" else "short",
+                "qty": qty,
+                "entry": entry_px,
+                "sl": sl,
+                "tp": tp,
+                "sl_dist": atr_dist,
+                "entry_fee": entry_fee,
+                "notional": notional,
+                "entry_time": exe_bar["time"],
+                "mfe": 0.0,
+                "mae": 0.0,
+            }
+            trades.append(
+                {
+                    "id": str(uuid4()),
+                    "type": entry_type,
+                    "price": _round(entry_px),
+                    "time": exe_bar["time"],
+                    "quantity": _round(qty, 8),
+                    "notional": _round(notional),
+                    "feePaid": _round(entry_fee),
+                    "reason": f"trend-breakout-v1 {STRATEGY_VERSION} {sig['macro_bias']} {sig['direction']} conf {sig['confidence']}",
+                }
+            )
+            bars_in_market += 1
+            # Mark equity right after entry at execution close.
+            close_px = float(exe_bar["close"])
+            if position["side"] == "long":
+                eq = cash + position["qty"] * close_px
+            else:
+                eq = cash + position["qty"] * (position["entry"] - close_px)
+            equity_curve.append({"time": exe_bar["time"], "value": _round(eq)})
+        else:
+            bars_in_market += 1
+            close_px = float(exe_bar["close"])
+            if position["side"] == "long":
+                eq = cash + position["qty"] * close_px
+            else:
+                eq = cash + position["qty"] * (position["entry"] - close_px)
+            equity_curve.append({"time": exe_bar["time"], "value": _round(eq)})
+
+    # Close any open position at final close (realistic: market-on-close, with costs).
+    if position is not None:
+        last = candles[-1]
+        px = float(last["close"])
+        qty = position["qty"]
+        entry = position["entry"]
+        if position["side"] == "long":
+            exited = px - half_spread - px * slip
+            exit_notional = qty * exited
+            exit_fee = exit_notional * fee_rate
+            gross = (exited - entry) * qty
+            cash += exit_notional - exit_fee
+            exit_type = "sell"
+        else:
+            exited = px + half_spread + px * slip
+            exit_notional = qty * exited
+            exit_fee = exit_notional * fee_rate
+            gross = (entry - exited) * qty
+            cash = cash + gross - exit_fee
+            exit_type = "buy"
+        net = gross - exit_fee - position["entry_fee"]
+        sl_d = position.get("sl_dist") or abs(position["entry"] - position["sl"]) or 1.0
+        exit_trade = {
+            "id": str(uuid4()),
+            "type": exit_type,
+            "price": _round(exited),
+            "time": last["time"],
+            "quantity": _round(qty, 8),
+            "notional": _round(exit_notional),
+            "feePaid": _round(exit_fee),
+            "profit": _round(net),
+            "reason": f"end of data (trend-breakout-v1 {STRATEGY_VERSION})",
+            "mfe": _round(position.get("mfe", 0.0)),
+            "mae": _round(position.get("mae", 0.0)),
+            "mfeR": _round(position.get("mfe", 0.0) / sl_d) if sl_d else 0,
+            "maeR": _round(position.get("mae", 0.0) / sl_d) if sl_d else 0,
+        }
+        trades.append(exit_trade)
+        closed_round_trips.append(exit_trade)
+        position = None
+        if equity_curve:
+            equity_curve[-1] = {"time": last["time"], "value": _round(cash)}
+
+    ending_balance = _round(cash)
+    total_profit = _round(ending_balance - starting)
+    total_return_pct = _round((total_profit / starting) * 100) if starting else 0
+    max_drawdown_pct = _calculate_max_drawdown(equity_curve)
+    winning = [t for t in closed_round_trips if t.get("profit", 0) > 0]
+    total_trades = len(closed_round_trips)
+    win_rate = _round((len(winning) / total_trades) * 100) if total_trades else 0
+    sharpe_ratio = _calculate_sharpe_ratio(equity_curve, timeframe)
+    benchmark = _calculate_buy_and_hold(candles, settings)
+    profit_factor = _calculate_profit_factor(closed_round_trips)
+    expectancy = _calculate_expectancy(closed_round_trips)
+    exposure = _round((bars_in_market / max(1, len(equity_curve))) * 100)
+    excursion = _summarize_excursions(closed_round_trips)
+
+    return {
+        "id": str(uuid4()),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "agent": agent,
+        "settings": settings,
+        "metrics": {
+            "totalReturnPct": total_return_pct,
+            "totalProfit": total_profit,
+            "maxDrawdownPct": max_drawdown_pct,
+            "sharpeRatio": sharpe_ratio,
+            "winRate": win_rate,
+            "totalTrades": total_trades,
+            "endingBalance": ending_balance,
+            "benchmarkReturnPct": benchmark["returnPct"],
+            "benchmarkEndingBalance": benchmark["endingBalance"],
+            "excessReturnPct": _round(total_return_pct - benchmark["returnPct"]),
+            "profitFactor": profit_factor,
+            "expectancy": expectancy,
+            "exposureTimePct": exposure,
+        },
+        "equityCurve": equity_curve,
+        "trades": trades,
+        "regimeStats": {
+            "trendingBars": trending_bars,
+            "rangeBars": range_bars,
+            "blockedByRegime": blocked_by_regime,
+            "strategyVersion": STRATEGY_VERSION,
+        },
+        "excursionStats": excursion,
+    }
+
+
+def _summarize_excursions(closed_trades: list[dict]) -> dict:
+    if not closed_trades:
+        return {
+            "avgMfeR": 0, "avgMaeR": 0, "winnersThatWentMinus1R": 0,
+            "losersThatReachedPlus1R": 0, "count": 0,
+        }
+    mfe_rs = [float(t.get("mfeR", 0) or 0) for t in closed_trades]
+    mae_rs = [float(t.get("maeR", 0) or 0) for t in closed_trades]
+    winners = [t for t in closed_trades if t.get("profit", 0) > 0]
+    losers = [t for t in closed_trades if t.get("profit", 0) <= 0]
+    w_bad = sum(1 for t in winners if float(t.get("maeR", 0) or 0) <= -1.0)
+    l_good = sum(1 for t in losers if float(t.get("mfeR", 0) or 0) >= 1.0)
+    return {
+        "avgMfeR": _round(sum(mfe_rs) / len(mfe_rs)),
+        "avgMaeR": _round(sum(mae_rs) / len(mae_rs)),
+        "winnersThatWentMinus1R": w_bad,
+        "losersThatReachedPlus1R": l_good,
+        "count": len(closed_trades),
+    }
+
+
+def _monte_carlo_summary(profits: list[float], n_paths: int = 500, seed: int = 7) -> dict:
+    """Bootstrap resample of trade profits. Fast, no re-simulation."""
+    import random
+
+    if len(profits) < 5:
+        return {
+            "available": False, "paths": 0,
+            "medianProfit": 0, "p5Profit": 0, "probProfitable": 0,
+            "note": "Need at least 5 closed trades for Monte Carlo.",
+        }
+    rng = random.Random(seed)
+    totals = []
+    for _ in range(n_paths):
+        totals.append(sum(rng.choice(profits) for _ in profits))
+    totals.sort()
+    median = totals[n_paths // 2]
+    p5 = totals[int(n_paths * 0.05)]
+    prob = sum(1 for t in totals if t > 0) / n_paths
+    return {
+        "available": True, "paths": n_paths,
+        "medianProfit": _round(median), "p5Profit": _round(p5),
+        "probProfitable": _round(prob * 100),
+        "note": "Resampled trade order with replacement; costs already in profits.",
+    }
+
+
+def _sensitivity_grid(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict]) -> dict:
+    """Small ATR/RR grid on the same data. Skipped on large windows for speed."""
+    if len(candles) > 600:
+        return {"available": False, "rows": [], "note": "Skipped: >600 candles (too slow). Narrow the window."}
+    combos = [(1.0, 1.5), (1.5, 2.0), (2.0, 2.0), (1.5, 1.5)]
+    rows = []
+    for atr_m, rr_m in combos:
+        s = dict(settings)
+        s["atrStopMultiplier"] = atr_m
+        s["rewardRiskMultiple"] = rr_m
+        try:
+            r = _simulate_trend_breakout(symbol, timeframe, agent, s, candles)
+            rows.append({
+                "atrStopMultiplier": atr_m, "rewardRiskMultiple": rr_m,
+                "totalReturnPct": r["metrics"]["totalReturnPct"],
+                "totalTrades": r["metrics"]["totalTrades"],
+                "profitFactor": r["metrics"]["profitFactor"],
+                "maxDrawdownPct": r["metrics"]["maxDrawdownPct"],
+            })
+        except Exception as exc:
+            rows.append({"atrStopMultiplier": atr_m, "rewardRiskMultiple": rr_m, "error": str(exc)})
+    base_pf = next((x.get("profitFactor", 0) for x in rows if x.get("atrStopMultiplier") == 1.5), 0)
+    fragile = all(abs((x.get("profitFactor", 0) or 0) - base_pf) > 0.5 for x in rows if x.get("atrStopMultiplier") != 1.5)
+    return {
+        "available": True, "rows": rows,
+        "fragile": fragile,
+        "note": "If profit flips sign across adjacent cells, the edge is parameter-fragile.",
+    }
+
+
+def _simulate_for_engine(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict], use_trend: bool) -> dict:
+    if use_trend:
+        return _simulate_trend_breakout(symbol, timeframe, agent, settings, candles)
+    return _simulate_backtest(symbol, timeframe, agent, settings, candles)
+
+
+def _calculate_walk_forward(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict], use_trend: bool = False) -> dict:
     if len(candles) < MIN_WALK_FORWARD_CANDLES:
         return {
             "available": False,
@@ -287,8 +772,8 @@ def _calculate_walk_forward(symbol: str, timeframe: str, agent: dict, settings: 
     for index, start in enumerate(start_indices, start=1):
         train_slice = candles[start : start + train_size]
         test_slice = candles[start + train_size : start + train_size + test_size]
-        train_result = _simulate_backtest(symbol, timeframe, agent, settings, train_slice)
-        test_result = _simulate_backtest(symbol, timeframe, agent, settings, test_slice)
+        train_result = _simulate_for_engine(symbol, timeframe, agent, settings, train_slice, use_trend)
+        test_result = _simulate_for_engine(symbol, timeframe, agent, settings, test_slice, use_trend)
         test_metrics = test_result["metrics"]
         windows.append(
             {

@@ -96,49 +96,15 @@ class MultiTimeframeService:
         m15_direction, m15_indicators, m15_analysis,
         h4_indicators, h4_price, h4_analysis,
     ) -> dict[str, Any]:
-        is_aligned = False
-        rejection_reason = None
-        confluence_quality = "POOR"
-        composite_score = 30.0
+        # Canonical rule from trend_breakout module (single source of truth).
+        from .trend_breakout import evaluate_swing_alignment
 
-        if macro_bias == "BULLISH":
-            if m15_direction == "long" and h1_direction in ("long", "neutral"):
-                is_aligned = True
-                confluence_quality = "EXCELLENT" if h1_direction == "long" else "GOOD"
-                composite_score = 88.0 if h1_direction == "long" else 72.0
-            elif m15_direction == "short":
-                rejection_reason = "COUNTER-TREND TRAP: M15 Short entry directly contradicts the 4-Hour Bullish macro trend. Longs only permitted."
-                confluence_quality = "CONFLICTED"
-                composite_score = 35.0
-            else:
-                rejection_reason = "WAITING FOR PULLBACK TRIGGER: Macro trend is Bullish, but M15 trigger has not confirmed entry."
-                confluence_quality = "WAITING"
-                composite_score = 50.0
-
-        elif macro_bias == "BEARISH":
-            if m15_direction == "short" and h1_direction in ("short", "neutral"):
-                is_aligned = True
-                confluence_quality = "EXCELLENT" if h1_direction == "short" else "GOOD"
-                composite_score = 88.0 if h1_direction == "short" else 72.0
-            elif m15_direction == "long":
-                rejection_reason = "COUNTER-TREND TRAP: M15 Long entry directly contradicts the 4-Hour Bearish macro trend. Shorts only permitted."
-                confluence_quality = "CONFLICTED"
-                composite_score = 35.0
-            else:
-                rejection_reason = "WAITING FOR PULLBACK TRIGGER: Macro trend is Bearish, but M15 trigger has not confirmed entry."
-                confluence_quality = "WAITING"
-                composite_score = 50.0
-
-        else:
-            rejection_reason = "MARKET CONSOLIDATION: 4-Hour timeframe lacks clear directional momentum. Avoid trading chop."
-            confluence_quality = "RANGING"
-            composite_score = 42.0
-
-        suggested_side = (
-            "buy" if (is_aligned and macro_bias == "BULLISH")
-            else "sell" if (is_aligned and macro_bias == "BEARISH")
-            else None
-        )
+        align = evaluate_swing_alignment(macro_bias, h1_direction, m15_direction)
+        is_aligned = align["is_aligned"]
+        rejection_reason = align["rejection"]
+        confluence_quality = align["quality"]
+        composite_score = align["score"]
+        suggested_side = align["side"]
 
         entry_price, sl, tp, rr_ratio = cls._build_execution(
             norm_sym, disp_sym, is_aligned, suggested_side, m15_indicators, m15_analysis

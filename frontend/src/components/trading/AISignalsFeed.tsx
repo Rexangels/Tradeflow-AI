@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowDownRight, ArrowUpRight, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, BellRing, RefreshCw, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { queryClient } from "../../lib/query-client";
 
@@ -25,6 +26,30 @@ export function AISignalsFeed({ onSelectSymbol }: AISignalsFeedProps) {
   });
 
   const signals = signalsQuery.data ?? [];
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const seenRef = useRef<Set<string>>(new Set());
+
+  // Toast + highlight when the scheduled scan records a fresh actionable signal.
+  useEffect(() => {
+    const actionable = signals.filter((s) => s.direction !== "neutral");
+    const fresh = actionable.find((s) => !seenRef.current.has(s.id));
+    actionable.forEach((s) => seenRef.current.add(s.id));
+    if (fresh) {
+      setFlashId(fresh.id);
+      const label = `${fresh.symbol} ${fresh.direction.toUpperCase()} ${fresh.confidencePct}%`;
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("TradeFlow signal flip", { body: label });
+      }
+      const t = setTimeout(() => setFlashId(null), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [signals]);
+
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
+  }, []);
 
   return (
     <div className="rounded-2xl border border-slate-800/80 bg-slate-950/80 p-5 backdrop-blur">
@@ -49,16 +74,28 @@ export function AISignalsFeed({ onSelectSymbol }: AISignalsFeedProps) {
         </button>
       </div>
 
+      {flashId && (
+        <div className="mt-3 flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+          <BellRing className="h-3.5 w-3.5" />
+          New actionable flip — see highlighted signal below. Schedule feeds it automatically.
+        </div>
+      )}
+
       <div className="mt-4 space-y-3 max-h-[480px] overflow-y-auto pr-1">
         {signals.map((sig) => {
           const isLong = sig.direction === "long";
           const isShort = sig.direction === "short";
+          const isFlash = sig.id === flashId;
 
           return (
             <div
               key={sig.id}
               onClick={() => onSelectSymbol?.(sig.symbol)}
-              className="group cursor-pointer rounded-xl border border-slate-800/70 bg-slate-900/50 p-3 hover:border-slate-700 hover:bg-slate-900/80 transition-all"
+              className={`group cursor-pointer rounded-xl border p-3 transition-all ${
+                isFlash
+                  ? "border-emerald-400/60 bg-emerald-500/10 shadow-lg shadow-emerald-950/30"
+                  : "border-slate-800/70 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900/80"
+              }`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
