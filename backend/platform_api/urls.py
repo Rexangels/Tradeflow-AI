@@ -13,6 +13,7 @@ from .forex_views import (
     RiskCheckView,
     RiskRulesView,
     TradingAccountView,
+    TradeBenchmarkView,
     TradingJournalReviewView,
     TradingOrderDetailView,
     TradingOrdersView,
@@ -65,6 +66,7 @@ urlpatterns = [
     path("trading/positions", TradingPositionsView.as_view()),
     path("trading/positions/<path:symbol>", TradingPositionDetailView.as_view()),
     path("trading/orders", TradingOrdersView.as_view()),
+    path("trading/benchmark", TradeBenchmarkView.as_view()),
     path("trading/orders/<str:order_id>", TradingOrderDetailView.as_view()),
     path("trading/journal/<str:trade_id>/review", TradingJournalReviewView.as_view()),
 

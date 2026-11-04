@@ -89,3 +89,26 @@ The job does not create edge — it measures base rate
 - Do not trade synthetic_demo data (blocked in backtest + execution).
 - Do not optimize parameters until rules, costs, and data source are frozen.
 - Do not go live on one good backtest. Require walk-forward + paper match.
+
+## 9. Trade benchmark and learning loop
+
+The Trade Performance Benchmark uses every persisted `TradeLog` record, not
+only the recent rows displayed in the journal. It reports scored wins, losses,
+breakeven trades, unscored closed records, expectancy, profit factor, cumulative
+drawdown, and results grouped by strategy version and pair. Net P&L subtracts
+fees only when the journal has a recorded fee; the fee-coverage figure shows
+how complete that adjustment is. Historical records without a close timestamp
+are ordered by entry time for drawdown calculations.
+
+MT5 trades closed by broker-side stops or targets can be reconciled from deal
+history with **Sync MT5 closes**. Trades remain unscored when broker history
+cannot establish their realized result. Quote-based close estimates and broker
+history results are labelled separately in the journal.
+
+Use benchmark outcomes to propose candidate strategy versions, then evaluate
+each candidate on chronological development and walk-forward periods with
+frozen execution costs. Preserve a final untouched period. AI may summarize
+results and flag candidates for review; it must not change live rules, risk
+limits, or promote itself. A candidate advances only after sufficient scored
+trades, stable out-of-sample behavior, and paper fills that resemble the
+backtest. This process measures evidence; it does not guarantee profitability.

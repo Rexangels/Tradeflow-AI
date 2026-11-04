@@ -189,6 +189,8 @@ class TradeLog(TimeStampedModel):
     stop_loss = models.FloatField(null=True, blank=True)
     take_profit = models.FloatField(null=True, blank=True)
     realized_pnl = models.FloatField(null=True, blank=True)
+    pnl_source = models.CharField(max_length=32, default="unknown", blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, default="open")  # open | closed | cancelled
     ai_reasoning = models.TextField(blank=True)
     mode = models.CharField(max_length=10, default="paper")  # paper | live

@@ -140,6 +140,7 @@ class OrderExecutionService:
         """
         norm_sym = normalize_symbol(symbol)
         disp_sym = format_display_symbol(symbol)
+        strategy_version = "trend-breakout-v1/1.0.0" if signal_id else "manual/direct"
 
         # A demo price must never be allowed to route an order. This applies to
         # manual, AI-assisted, and autonomous paths alike.
@@ -228,7 +229,7 @@ class OrderExecutionService:
                 status="open",
                 ai_reasoning=ai_reasoning or assessment.get("reason", ""),
                 mode="mt5_demo",
-                strategy_version="trend-breakout-v1/1.0.0",
+                strategy_version=strategy_version,
                 regime=journal.get("regime", ""),
                 votes=journal.get("votes", {}),
                 session=journal.get("session", ""),
@@ -305,7 +306,7 @@ class OrderExecutionService:
             status="open" if status in {"filled", "partially_filled", "new", "accepted", "submitted"} else status,
             ai_reasoning=ai_reasoning or assessment.get("reason", ""),
             mode=client.mode,
-            strategy_version="trend-breakout-v1/1.0.0",
+            strategy_version=strategy_version,
             regime=journal.get("regime", ""),
             votes=journal.get("votes", {}),
             session=journal.get("session", ""),
@@ -461,11 +462,19 @@ class OrderExecutionService:
 
             if target_ticket:
                 close_res = mt5_client.close_position(target_ticket)
-                # Update all matching open logs with exit + excursion (same round trip, no new row).
-                for t in TradeLog.objects.filter(symbol=disp_sym, status="open"):
+                if not close_res.get("success"):
+                    return close_res
+                # Match the closed broker ticket so other positions in the
+                # same pair remain open in the audit journal.
+                mt5_order_id = f"MT5-{target_ticket}"
+                for t in TradeLog.objects.filter(alpaca_order_id=mt5_order_id, status="open"):
                     t.status = "closed"
                     t.exit_price = close_res.get("closed_price") or 0.0
+                    t.realized_pnl = close_res.get("profit")
+                    t.fee_paid = close_res.get("fee_paid")
+                    t.pnl_source = close_res.get("pnl_source", "unknown")
                     t.exit_reason = exit_reason
+                    t.closed_at = timezone.now()
                     exc = cls._excursion_for_trade(t)
                     if exc:
                         t.mfe_r = exc.get("mfe_r")
@@ -510,10 +519,22 @@ class OrderExecutionService:
         # Update open trade logs for this symbol (same row, no duplicate leg).
         open_trades = TradeLog.objects.filter(symbol=disp_sym, status="open")
         current_px = latest_price(clean_sym)
+        fill_price = None
+        if isinstance(close_resp, dict):
+            raw_fill = close_resp.get("filled_avg_price") or close_resp.get("avg_fill_price")
+            if raw_fill is not None:
+                try:
+                    fill_price = float(raw_fill)
+                except (TypeError, ValueError):
+                    fill_price = None
+        if fill_price is not None:
+            current_px = fill_price
         for t in open_trades:
             t.status = "closed"
             t.exit_price = current_px
             t.exit_reason = exit_reason
+            t.closed_at = timezone.now()
+            t.pnl_source = "broker_fill" if fill_price is not None else "quote_estimate"
             if t.entry_price:
                 # Realized P&L calculation
                 multiplier = 1 if t.side.lower() == "buy" else -1
@@ -564,6 +585,8 @@ class OrderExecutionService:
                 "stop_loss": t.stop_loss,
                 "take_profit": t.take_profit,
                 "realized_pnl": t.realized_pnl,
+                "pnl_source": t.pnl_source,
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
                 "status": t.status,
                 "ai_reasoning": t.ai_reasoning,
                 "mode": t.mode,
@@ -584,3 +607,49 @@ class OrderExecutionService:
             }
             for t in logs
         ]
+
+    @classmethod
+    def sync_closed_mt5_trade_logs(cls) -> dict[str, Any]:
+        """Reconcile MT5 SL/TP/manual closes that happened outside the app."""
+        from . import mt5_client as mt5_adapter
+        from .mt5_client import MT5_AVAILABLE, get_mt5_client
+
+        client = get_mt5_client()
+        if not MT5_AVAILABLE or not client.is_connected():
+            return {"connected": False, "synced": 0}
+
+        positions = mt5_adapter.mt5.positions_get()
+        if positions is None:
+            return {"connected": True, "synced": 0, "complete": False}
+        open_tickets = {
+            int(position_id)
+            for position in positions
+            for position_id in (getattr(position, "ticket", None), getattr(position, "identifier", None))
+            if position_id is not None
+        }
+        synced = 0
+        for trade in TradeLog.objects.filter(mode="mt5_demo", status="open"):
+            try:
+                ticket = int((trade.alpaca_order_id or "").removeprefix("MT5-"))
+            except (TypeError, ValueError):
+                continue
+            if ticket in open_tickets:
+                continue
+            result = client.get_closed_position_summary(ticket)
+            if not result:
+                continue
+            trade.status = "closed"
+            trade.exit_price = result["closed_price"]
+            trade.realized_pnl = result["profit"]
+            trade.fee_paid = result["fee_paid"]
+            trade.pnl_source = result["pnl_source"]
+            trade.exit_reason = result["exit_reason"]
+            trade.closed_at = result["closed_at"]
+            exc = cls._excursion_for_trade(trade)
+            if exc:
+                trade.mfe_r = exc.get("mfe_r")
+                trade.mae_r = exc.get("mae_r")
+            trade.save()
+            synced += 1
+
+        return {"connected": True, "synced": synced, "complete": True}

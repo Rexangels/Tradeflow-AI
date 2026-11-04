@@ -1,25 +1,18 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BookOpen } from "lucide-react";
+import { BookOpen, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { api } from "../../lib/api";
+import { api, type TradeBenchmarkGroup } from "../../lib/api";
 import { queryClient } from "../../lib/query-client";
 import type { TradeLogItem } from "../../shared";
 
 const LESSONS = ["", "good-win", "good-loss", "chased", "early-m15", "news-slip", "spread-wide", "sized-big", "no-setup"];
 
-function digest(rows: TradeLogItem[]) {
-  const wins = rows.filter((t) => (t.realized_pnl ?? 0) > 0);
-  const grossW = wins.reduce((a, t) => a + (t.realized_pnl ?? 0), 0);
-  const grossL = Math.abs(rows.filter((t) => (t.realized_pnl ?? 0) <= 0).reduce((a, t) => a + (t.realized_pnl ?? 0), 0));
-  return {
-    n: rows.length,
-    winPct: rows.length ? (wins.length / rows.length) * 100 : 0,
-    pf: grossL > 0 ? grossW / grossL : grossW > 0 ? 99 : 0,
-    exp: rows.length ? rows.reduce((a, t) => a + (t.realized_pnl ?? 0), 0) / rows.length : 0,
-  };
-}
-
 export function TradeJournalTable() {
+  const benchmarkQuery = useQuery({
+    queryKey: ["trade-benchmark"],
+    queryFn: api.getTradeBenchmark,
+    refetchInterval: 15000,
+  });
   const tradesQuery = useQuery({
     queryKey: ["trading-orders"],
     queryFn: () => api.getTradingOrders(100),
@@ -31,17 +24,19 @@ export function TradeJournalTable() {
       api.reviewJournalTrade(p.id, { followed_plan: p.followed_plan, lesson_tag: p.lesson_tag, human_note: p.human_note }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["trading-orders"] }),
   });
+  const syncMutation = useMutation({
+    mutationFn: api.syncTradeBenchmark,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["trade-benchmark"] }),
+        queryClient.invalidateQueries({ queryKey: ["trading-orders"] }),
+      ]);
+    },
+  });
 
   const trades = tradesQuery.data ?? [];
-  const closedTrades = trades.filter((t) => t.status === "closed" && t.realized_pnl !== null);
-  const winningTrades = closedTrades.filter((t) => (t.realized_pnl ?? 0) > 0);
-  const winRate = closedTrades.length > 0 ? (winningTrades.length / closedTrades.length) * 100 : 0;
-  const totalRealizedPnl = closedTrades.reduce((acc, t) => acc + (t.realized_pnl ?? 0), 0);
-  const byModule = new Map<string, TradeLogItem[]>();
-  closedTrades.forEach((t) => {
-    const k = t.strategy_version || "unknown";
-    byModule.set(k, [...(byModule.get(k) ?? []), t]);
-  });
+  const benchmark = benchmarkQuery.data;
+  const stats = benchmark?.summary;
 
   return (
     <div className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5 backdrop-blur">
@@ -49,61 +44,60 @@ export function TradeJournalTable() {
         <div>
           <div className="flex items-center gap-2">
             <BookOpen className="h-4 w-4 text-cyan-400" />
-            <h3 className="font-semibold text-slate-100 text-base">Trade Audit Journal</h3>
+            <h3 className="font-semibold text-slate-100 text-base">Trade Performance Benchmark</h3>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Full historical audit of all orders, fill prices, and realized P&L
+            All-time closed-trade outcomes from the full journal, grouped by strategy and pair
           </p>
         </div>
-
-        <div className="flex items-center gap-4 text-xs">
-          <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-1.5">
-            <span className="text-slate-400">Win Rate: </span>
-            <span className="font-semibold text-slate-100 font-mono">
-              {winRate.toFixed(1)}% ({winningTrades.length}/{closedTrades.length})
-            </span>
-          </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-1.5">
-            <span className="text-slate-400">Total P&L: </span>
-            <span
-              className={`font-semibold font-mono ${
-                totalRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"
-              }`}
-            >
-              {totalRealizedPnl >= 0 ? "+" : ""}${totalRealizedPnl.toFixed(2)}
-            </span>
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={() => syncMutation.mutate()}
+          disabled={syncMutation.isPending}
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 text-xs font-medium text-slate-200 hover:border-cyan-500/50 hover:text-cyan-200 disabled:cursor-wait disabled:opacity-60"
+          aria-label="Sync MT5 trades closed outside the platform"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+          {syncMutation.isPending ? "Syncing MT5" : "Sync MT5 closes"}
+        </button>
       </div>
 
-      {byModule.size > 0 && (
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {[...byModule.entries()].map(([mod, rows]) => {
-            const d = digest(rows);
-            return (
-              <div key={mod} className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-300">
-                <p className="font-semibold text-slate-100 truncate" title={mod}>{mod}</p>
-                <p className="mt-1 font-mono">
-                  n={d.n} · win {d.winPct.toFixed(0)}% · PF {d.pf.toFixed(2)} · exp ${d.exp.toFixed(2)}
-                </p>
-                <p className="text-slate-500">Promote only at n≥30 with PF&gt;1.2 after costs.</p>
-              </div>
-            );
-          })}
+      {syncMutation.data && <p className="mt-3 text-xs text-slate-400" role="status">{!syncMutation.data.connected ? "MT5 is not connected. Broker-side closes were not synchronized." : syncMutation.data.complete === false ? "MT5 connected, but open-position status could not be confirmed. No trades were changed; try again." : `${syncMutation.data.synced} externally closed MT5 trade${syncMutation.data.synced === 1 ? "" : "s"} reconciled from broker history.`}</p>}
+      {syncMutation.isError && <p className="mt-3 text-xs text-rose-300" role="alert">MT5 trade sync failed. Check the terminal connection and try again.</p>}
+
+      {benchmarkQuery.isError && <p role="alert" className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200">Benchmark data could not be loaded. Refresh the page or check the backend connection.</p>}
+
+      {stats && <>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <BenchmarkMetric label="Scored closed trades" value={`${stats.scoredCount}`} detail={`${stats.wins} wins · ${stats.losses} losses · ${stats.breakeven} breakeven`} />
+          <BenchmarkMetric label="Win rate" value={stats.winRatePct == null ? "—" : `${stats.winRatePct.toFixed(1)}%`} detail="Closed trades with recorded P&L only" />
+          <BenchmarkMetric label="P&L after recorded fees" value={formatMoney(stats.netPnlAfterRecordedFees)} detail={`Gross ${formatMoney(stats.grossPnl)} · fees recorded ${formatMoney(stats.recordedFees)}`} tone={stats.netPnlAfterRecordedFees >= 0 ? "positive" : "negative"} />
+          <BenchmarkMetric label="Expectancy / trade" value={stats.expectancy == null ? "—" : formatMoney(stats.expectancy)} detail={`PF ${stats.profitFactor == null ? "—" : stats.profitFactor.toFixed(2)} · max drawdown ${formatMoney(stats.maxDrawdown)}`} tone={stats.expectancy == null ? "neutral" : stats.expectancy >= 0 ? "positive" : "negative"} />
         </div>
-      )}
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400">
+          <span>Records: {stats.recordCount} total · {stats.openCount} open · {stats.unscoredClosedCount} closed without P&amp;L</span>
+          <span>Fee coverage: {stats.feeCoveragePct == null ? "no scored trades" : `${stats.feeCoveragePct.toFixed(0)}% of scored trades`}</span>
+          <span>Results describe recorded history; they do not establish future profitability.</span>
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          {benchmark?.byStrategy.length ? <BenchmarkBreakdown title="By strategy version" rows={benchmark.byStrategy} /> : null}
+          {benchmark?.bySymbol.length ? <BenchmarkBreakdown title="By pair" rows={benchmark.bySymbol} /> : null}
+        </div>
+        {stats.scoredCount < 30 && <p className="mt-3 text-xs text-amber-300">Early evidence: fewer than 30 scored closed trades. Treat these results as preliminary.</p>}
+      </>}
+      {!benchmarkQuery.isLoading && stats?.recordCount === 0 && <p className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">No trades have been recorded yet. Trades will appear here after they are logged and closed.</p>}
 
       <div className="mt-4 overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-900/60 uppercase tracking-wider text-slate-400 border-b border-slate-800/60">
             <tr>
-              <th className="px-4 py-3 font-medium">Time</th>
+              <th className="px-4 py-3 font-medium">Entry time</th>
               <th className="px-4 py-3 font-medium">Pair</th>
               <th className="px-4 py-3 font-medium">Side</th>
               <th className="px-4 py-3 font-medium text-right">Units</th>
               <th className="px-4 py-3 font-medium text-right">Entry</th>
               <th className="px-4 py-3 font-medium text-right">Exit</th>
-              <th className="px-4 py-3 font-medium text-right">Realized P&L</th>
+              <th className="px-4 py-3 font-medium text-right">Recorded P&amp;L</th>
               <th className="px-4 py-3 font-medium text-center">Status</th>
               <th className="px-4 py-3 font-medium">Regime / Exit</th>
               <th className="px-4 py-3 font-medium text-right">MFE/MAE (R)</th>
@@ -115,7 +109,8 @@ export function TradeJournalTable() {
               const isJpy = t.symbol.includes("JPY");
               const decimals = isJpy ? 3 : 5;
               const hasPnl = t.realized_pnl !== null;
-              const isProfit = (t.realized_pnl ?? 0) >= 0;
+              const isProfit = (t.realized_pnl ?? 0) > 0;
+              const isLoss = (t.realized_pnl ?? 0) < 0;
 
               return (
                 <tr key={t.id} className="hover:bg-slate-900/40 transition-colors">
@@ -143,8 +138,9 @@ export function TradeJournalTable() {
                   </td>
                   <td className="px-4 py-3 font-mono text-right font-semibold">
                     {hasPnl ? (
-                      <span className={isProfit ? "text-emerald-400" : "text-rose-400"}>
-                        {isProfit ? "+" : ""}${t.realized_pnl?.toFixed(2)}
+                      <span className={isProfit ? "text-emerald-400" : isLoss ? "text-rose-400" : "text-slate-300"}>
+                        {isProfit ? "+" : ""}{formatMoney(t.realized_pnl ?? 0)}
+                        {t.pnl_source && t.pnl_source !== "unknown" ? <span className="ml-1 text-[9px] text-slate-500">{t.pnl_source.replaceAll("_", " ")}</span> : null}
                       </span>
                     ) : (
                       <span className="text-slate-500">—</span>
@@ -217,13 +213,27 @@ export function TradeJournalTable() {
             {!tradesQuery.isLoading && trades.length === 0 && (
               <tr>
                 <td colSpan={11} className="px-4 py-8 text-center text-slate-500">
-                  No orders recorded in the trade log yet.
+                  No recent orders recorded in the trade log.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      <p className="mt-2 text-[11px] text-slate-500">Recent trade records (latest {trades.length < 100 ? trades.length : 100}). Full-history totals above are calculated server-side.</p>
     </div>
   );
+}
+
+function formatMoney(value: number) {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
+function BenchmarkMetric({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: "neutral" | "positive" | "negative" }) {
+  const toneClass = tone === "positive" ? "text-emerald-300" : tone === "negative" ? "text-rose-300" : "text-slate-100";
+  return <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3"><p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p><p className={`mt-1 text-xl font-semibold font-mono ${toneClass}`}>{value}</p><p className="mt-1 text-[10px] leading-relaxed text-slate-500">{detail}</p></div>;
+}
+
+function BenchmarkBreakdown({ title, rows }: { title: string; rows: TradeBenchmarkGroup[] }) {
+  return <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-3"><h4 className="text-xs font-semibold text-slate-200">{title}</h4><div className="mt-2 divide-y divide-slate-800/70">{rows.map((row) => <div key={row.key} className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"><div className="min-w-0"><p className="truncate font-medium text-slate-200">{row.key}</p><p className="mt-0.5 text-[10px] text-slate-500">{row.scoredCount} scored · {row.wins}W / {row.losses}L / {row.breakeven}BE · win {row.winRatePct == null ? "—" : `${row.winRatePct.toFixed(0)}%`}</p></div><div className="text-right font-mono"><p className={row.netPnlAfterRecordedFees >= 0 ? "text-emerald-300" : "text-rose-300"}>{formatMoney(row.netPnlAfterRecordedFees)}</p><p className="mt-0.5 text-[10px] text-slate-500">expectancy {row.expectancy == null ? "—" : formatMoney(row.expectancy)}</p></div></div>)}</div></section>;
 }

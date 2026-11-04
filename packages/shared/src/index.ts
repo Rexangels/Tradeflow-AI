@@ -533,6 +533,8 @@ export const tradeLogSchema = z.object({
   stop_loss: z.number().nullable(),
   take_profit: z.number().nullable(),
   realized_pnl: z.number().nullable(),
+  pnl_source: z.string().optional(),
+  closed_at: z.string().nullable().optional(),
   status: z.string(),
   ai_reasoning: z.string(),
   mode: z.string(),

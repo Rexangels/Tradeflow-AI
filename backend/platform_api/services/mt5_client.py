@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone as dt_timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -393,11 +394,94 @@ class MT5Client:
             comment = result.comment if result else "No response"
             return {"success": False, "error": f"Close failed: {comment}"}
 
+        # Prefer completed broker history so the journal can include realized
+        # P&L and costs when the terminal exposes the deals.
+        try:
+            history = mt5.history_deals_get(position=position.identifier or position.ticket)
+        except Exception:
+            history = None
+        if history:
+            gross_profit = sum(float(getattr(deal, "profit", 0.0) or 0.0) for deal in history)
+            costs = sum(
+                float(getattr(deal, "commission", 0.0) or 0.0)
+                + float(getattr(deal, "swap", 0.0) or 0.0)
+                + float(getattr(deal, "fee", 0.0) or 0.0)
+                for deal in history
+            )
+            account_info = mt5.account_info()
+            divisor = 100.0 if account_info and ("usc" in account_info.currency.lower() or "cent" in account_info.currency.lower()) else 1.0
+            realized_profit = round(gross_profit / divisor, 2)
+            fee_paid = round(-costs / divisor, 2)
+            pnl_source = "broker_history_net"
+        else:
+            # Position profit is broker-reported but does not reconcile all
+            # round-trip costs, so the benchmark can label it as an estimate.
+            account_info = mt5.account_info()
+            divisor = 100.0 if account_info and ("usc" in account_info.currency.lower() or "cent" in account_info.currency.lower()) else 1.0
+            realized_profit = round(float(position.profit) / divisor, 2)
+            fee_paid = None
+            pnl_source = "broker_float_at_close"
+
         return {
             "success": True,
             "ticket": ticket_int,
             "closed_price": result.price,
-            "profit": position.profit,
+            "profit": realized_profit,
+            "fee_paid": fee_paid,
+            "pnl_source": pnl_source,
+        }
+
+    def get_closed_position_summary(self, ticket: int | str) -> Optional[dict[str, Any]]:
+        """Return realized broker history for a position closed outside TradeFlow."""
+        if not MT5_AVAILABLE:
+            return None
+        if not self._connected and not self.connect().get("success"):
+            return None
+        position_id = int(ticket)
+        try:
+            orders = mt5.history_orders_get(ticket=int(ticket))
+            if orders:
+                position_id = int(getattr(orders[-1], "position_id", 0) or position_id)
+            deals = mt5.history_deals_get(position=position_id)
+        except Exception:
+            return None
+        if not deals:
+            return None
+
+        out_entries = {
+            getattr(mt5, "DEAL_ENTRY_OUT", 1),
+            getattr(mt5, "DEAL_ENTRY_OUT_BY", 3),
+        }
+        closing = [deal for deal in deals if getattr(deal, "entry", None) in out_entries]
+        if not closing:
+            return None
+
+        gross = sum(float(getattr(deal, "profit", 0.0) or 0.0) for deal in deals)
+        costs = sum(
+            float(getattr(deal, "commission", 0.0) or 0.0)
+            + float(getattr(deal, "swap", 0.0) or 0.0)
+            + float(getattr(deal, "fee", 0.0) or 0.0)
+            for deal in deals
+        )
+        account_info = mt5.account_info()
+        divisor = 100.0 if account_info and ("usc" in account_info.currency.lower() or "cent" in account_info.currency.lower()) else 1.0
+        last_close = max(closing, key=lambda deal: getattr(deal, "time", 0))
+        reason_code = getattr(last_close, "reason", None)
+        if reason_code == getattr(mt5, "DEAL_REASON_SL", object()):
+            exit_reason = "sl"
+        elif reason_code == getattr(mt5, "DEAL_REASON_TP", object()):
+            exit_reason = "tp"
+        else:
+            exit_reason = "broker-close"
+        close_time = getattr(last_close, "time", None)
+        closed_at = datetime.fromtimestamp(close_time, tz=dt_timezone.utc) if close_time else None
+        return {
+            "closed_price": float(getattr(last_close, "price", 0.0) or 0.0),
+            "profit": round(gross / divisor, 2),
+            "fee_paid": round(-costs / divisor, 2),
+            "pnl_source": "broker_history_net",
+            "exit_reason": exit_reason,
+            "closed_at": closed_at,
         }
 
     def update_protection(self, ticket: int | str, stop_loss: float, take_profit: Optional[float] = None) -> dict[str, Any]:

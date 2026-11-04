@@ -3,6 +3,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,22 @@ class TradingOrdersView(APIView):
         if not res.get("success"):
             return Response(res, status=400)
         return Response(res, status=201)
+
+
+class TradeBenchmarkView(APIView):
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        from .services.trade_benchmark import build_benchmark
+
+        trades = TradeLog.objects.all().order_by("closed_at", "created_at")
+        result = build_benchmark(trades)
+        result["generatedAt"] = timezone.now().isoformat()
+        return Response(result)
+
+    def post(self, request):
+        result = OrderExecutionService.sync_closed_mt5_trade_logs()
+        return Response(result)
 
 
 class TradingOrderDetailView(APIView):

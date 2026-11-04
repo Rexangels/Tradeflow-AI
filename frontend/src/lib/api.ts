@@ -131,6 +131,42 @@ export interface BrokerGatewayResponse {
   };
 }
 
+export interface TradeBenchmarkSummary {
+  recordCount: number;
+  openCount: number;
+  closedCount: number;
+  scoredCount: number;
+  unscoredClosedCount: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  winRatePct: number | null;
+  grossProfit: number;
+  grossLoss: number;
+  grossPnl: number;
+  recordedFees: number;
+  netPnlAfterRecordedFees: number;
+  expectancy: number | null;
+  averageWin: number | null;
+  averageLoss: number | null;
+  profitFactor: number | null;
+  maxDrawdown: number;
+  feeCoveragePct: number | null;
+  pnlSources: Record<string, number>;
+}
+
+export interface TradeBenchmarkGroup extends TradeBenchmarkSummary {
+  key: string;
+}
+
+export interface TradeBenchmarkResponse {
+  generatedAt: string;
+  summary: TradeBenchmarkSummary;
+  byStrategy: TradeBenchmarkGroup[];
+  bySymbol: TradeBenchmarkGroup[];
+  byMode: TradeBenchmarkGroup[];
+}
+
 export const api = {
   health: () => request<{ status: string; service: string }>("/health"),
   getSession: () => request<AdminSession>("/admin/session"),
@@ -260,6 +296,8 @@ export const api = {
       { method: "DELETE" },
     ),
   getTradingOrders: (limit = 50) => request<TradeLogItem[]>(`/trading/orders?limit=${limit}`),
+  getTradeBenchmark: () => request<TradeBenchmarkResponse>("/trading/benchmark"),
+  syncTradeBenchmark: () => request<{ connected: boolean; synced: number; complete?: boolean }>("/trading/benchmark", { method: "POST" }),
   reviewJournalTrade: (tradeId: string, payload: { followed_plan?: boolean | null; lesson_tag?: string; human_note?: string }) =>
     request<{ success: boolean; id: string }>(`/trading/journal/${encodeURIComponent(tradeId)}/review`, {
       method: "PUT",

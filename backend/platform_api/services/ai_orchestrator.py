@@ -310,6 +310,7 @@ def run_agent_cycle(user, agent: Optional[Agent] = None, symbol: Optional[str] =
                     f"Top-Down Institutional Cycle ({mtf['confluence_quality']}, {round(mtf['composite_score'], 1)}% score): "
                     f"4H {mtf['macro_bias_4h']} bias confirmed on M15 trigger. Session: {session_info['primary_session']}."
                 ),
+                signal_id=str(sig_record.id) if sig_record else None,
             )
             if order_res.get("success"):
                 executed_trades.append(order_res)
