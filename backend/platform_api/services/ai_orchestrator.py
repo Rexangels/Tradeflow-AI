@@ -415,13 +415,45 @@ def _get_last_discussed_symbol(thread: Optional[ChatThread]) -> Optional[str]:
     return None
 
 
+def _extract_last_proposed_plan(thread: Optional[ChatThread]) -> dict[str, Any]:
+    """
+    Extracts symbol, side, stop_loss, take_profit, and lot size from the most recent
+    assistant or tool message in the thread if the assistant just proposed an actionable setup.
+    """
+    if not thread:
+        return {}
+    try:
+        recent_msgs = list(thread.messages.filter(role__in=["assistant", "tool"]).order_by("-created_at")[:6])
+        for m in recent_msgs:
+            text = m.content or ""
+            side_match = re.search(r"(?:Suggested\s+Side|Side)\s*:\s*\*{0,2}(BUY|SELL|LONG|SHORT)\*{0,2}", text, re.IGNORECASE)
+            if not side_match:
+                continue
+            raw_side = side_match.group(1).upper()
+            side = "buy" if raw_side in ("BUY", "LONG") else "sell"
+            sl_match = re.search(r"(?:Stop-Loss|SL)\s*:\s*\*{0,2}([\d.]+)\*{0,2}", text, re.IGNORECASE)
+            tp_match = re.search(r"(?:Take-Profit|TP)\s*:\s*\*{0,2}([\d.]+)\*{0,2}", text, re.IGNORECASE)
+            size_match = re.search(r"(?:Size\s*:\s*\*{0,2})?([\d.]+)\s*lot", text, re.IGNORECASE)
+            sym = _guess_symbol_from_text(text)
+            return {
+                "symbol": sym,
+                "side": side,
+                "stop_loss": float(sl_match.group(1)) if sl_match else None,
+                "take_profit": float(tp_match.group(1)) if tp_match else None,
+                "qty": float(size_match.group(1)) if size_match else None,
+            }
+    except Exception:
+        pass
+    return {}
+
+
 def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str, Any]]:
     """
     Parses natural language execution commands like:
     - 'buy 1000 EUR/USD'
     - 'buy 0.01 SOL/USD'
     - 'let buy it'
-    - 'good execute this trade'
+    - 'execute' / 'execute trade' / 'proceed' / 'yes'
     - 'close position'
     """
     agent = thread.agent if isinstance(thread, ChatThread) else thread
@@ -437,7 +469,7 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
             closed_count += 1
         return {
             "action": "close_all",
-            "summary": f"Liquidated {closed_count} open positions across the Alpaca account.",
+            "summary": f"Liquidated {closed_count} open positions across the active broker account.",
         }
 
     # Trailing Stop intent: e.g. "trail AAPL by 5%" or "trailing stop AAPL 5%"
@@ -450,7 +482,7 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
         if res.get("success"):
             return {
                 "action": "trailing_stop",
-                "summary": f"Activated AI {t_pct}% Trailing Stop on {t_sym}. Alpaca will dynamically trail price to lock in profits.",
+                "summary": f"Activated AI {t_pct}% Trailing Stop on {t_sym}. Broker will dynamically trail price to lock in profits.",
             }
         return {"action": "trailing_stop", "summary": f"Could not set trailing stop on {t_sym}: {res.get('error')}"}
 
@@ -485,12 +517,10 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
             }
         return {"action": "close_position", "summary": f"Could not close position for {target_sym}: {res.get('error')}"}
 
-    # Bare confirmation ("proceed", "yes, do it", "confirm") after a proposal.
-    # The old bot hallucinated <execute_trade> tags here and placed nothing.
-    # Resolve last symbol + current MTF side and route a REAL order, or say
-    # plainly that nothing was placed.
-    if re.match(r"^(proceed|confirm|yes|do it|go ahead|place it|take it|execute it)\b", msg):
-        last_sym = _guess_symbol_from_text(message) or _get_last_discussed_symbol(chat_thread) or "BTC/USD"
+    # Bare confirmation ("execute", "proceed", "yes, do it", "confirm") after a proposal.
+    if re.match(r"^(execute|proceed|confirm|yes|ok|okay|do it|go ahead|place it|take it|execute it|execute now|send it)\b", msg) and not re.search(r"\b(buy|sell|long|short)\b", msg):
+        proposed = _extract_last_proposed_plan(chat_thread)
+        last_sym = _guess_symbol_from_text(message) or proposed.get("symbol") or _get_last_discussed_symbol(chat_thread) or "BTC/USD"
         disp_sym = format_display_symbol(last_sym)
         from .multi_timeframe import MultiTimeframeService
 
@@ -498,22 +528,24 @@ def _handle_trade_intents(user, thread: Any, message: str) -> Optional[dict[str,
             mtf = MultiTimeframeService.analyze_top_down(disp_sym)
         except Exception as exc:
             return {"action": "confirm_failed", "summary": f"No order placed: market read failed ({exc})."}
-        side = (mtf.get("suggested_side") or "").lower()
-        if not side or not mtf.get("is_aligned"):
+        side = (mtf.get("suggested_side") or proposed.get("side") or "").lower()
+        if not side or (not mtf.get("is_aligned") and not proposed.get("side")):
             return {
                 "action": "confirm_no_setup",
                 "summary": (
                     f"No order placed: {disp_sym} is {mtf.get('confluence_quality', 'not aligned')} "
                     f"({mtf.get('rejection_reason') or 'no M15 confirmation'}). "
-                    f"Say e.g. 'sell 0.01 {disp_sym}' to force a directional ticket anyway, or set a watch."
+                    f"Say e.g. 'buy 0.01 {disp_sym}' or 'sell 0.01 {disp_sym}' to force a directional ticket anyway, or set a watch."
                 ),
             }
         active_broker = OrderExecutionService.get_active_broker()
-        qty = 0.01 if active_broker == "mt5" else 1000.0
+        qty = proposed.get("qty") or (0.01 if active_broker == "mt5" else 1000.0)
+        stop_loss = mtf.get("stop_loss") or proposed.get("stop_loss")
+        take_profit = mtf.get("take_profit") or proposed.get("take_profit")
         res = OrderExecutionService.execute_order(
             symbol=disp_sym, side=side, qty=qty,
-            stop_loss=mtf.get("stop_loss"), take_profit=mtf.get("take_profit"),
-            agent=agent, ai_reasoning=f"Chat confirmation ('{message}') on aligned {disp_sym}.",
+            stop_loss=stop_loss, take_profit=take_profit,
+            agent=agent, ai_reasoning=f"Chat confirmation ('{message}') on {disp_sym}.",
         )
         if res.get("success"):
             return {
@@ -729,12 +761,18 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
         equity_val = acc.get("equity") or acc.get("balance") or 0.0
         free_margin = acc.get("marginFree") or acc.get("buying_power") or 0.0
         leverage_val = acc.get("leverage", 2000)
+        is_connected = acc.get("connected", True)
+        conn_status = (
+            "CONNECTED (Live Broker IPC Ready)"
+            if is_connected
+            else f"STANDBY / DISCONNECTED ({acc.get('statusNote') or 'Open and log into Exness MT5 desktop terminal to route live orders'})"
+        )
 
         contexts.append(
             ToolContext(
                 name="active_broker_and_account",
                 content=(
-                    f"Active Broker Gateway: {broker_label}. "
+                    f"Active Broker Gateway: {broker_label} [{conn_status}]. "
                     f"Account Balance: ${acc.get('balance', equity_val):,.2f}, Equity: ${equity_val:,.2f}, "
                     f"Free Margin / Buying Power: ${free_margin:,.2f}, Leverage: 1:{leverage_val}. "
                     f"Open positions count: {len(positions)}. "

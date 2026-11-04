@@ -1,9 +1,13 @@
 from pathlib import Path
 import os
+import sys
 from urllib.parse import unquote, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+_VENV_SITE_PACKAGES = BASE_DIR.parent / ".venv" / "Lib" / "site-packages"
+if _VENV_SITE_PACKAGES.exists() and str(_VENV_SITE_PACKAGES) not in sys.path:
+    sys.path.append(str(_VENV_SITE_PACKAGES))
 
 
 def load_env_file() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timezone as dt_timezone
 from typing import Any, Optional
 
@@ -41,16 +42,24 @@ class MT5Client:
         self.server = server or os.getenv("MT5_SERVER", "Exness-MT5Trial9")
         self.path = path or os.getenv("MT5_PATH", "")
         self._connected = False
+        self._last_failed_at: float = 0.0
+        self._last_error_result: Optional[dict[str, Any]] = None
 
-    def connect(self) -> dict[str, Any]:
+    def connect(self, force: bool = False) -> dict[str, Any]:
         """
         Initializes the connection to the MetaTrader 5 desktop terminal.
+        Caches failed IPC attempts for 10 seconds to avoid blocking multi-timeframe
+        reads when the desktop terminal is closed or awaiting login.
         """
         if not MT5_AVAILABLE:
             return {
                 "success": False,
                 "error": "MetaTrader5 Python module not installed in current environment.",
             }
+
+        now = time.monotonic()
+        if not force and not self._connected and self._last_error_result and (now - self._last_failed_at) < 30.0:
+            return self._last_error_result
 
         # Initialize MT5 terminal
         init_kwargs = {}
@@ -60,14 +69,26 @@ class MT5Client:
         if not mt5.initialize(**init_kwargs):
             err_code, err_desc = mt5.last_error()
             logger.warning(f"MT5 initialize failed: {err_code} - {err_desc}")
-            return {
+            self._last_failed_at = now
+            self._last_error_result = {
                 "success": False,
                 "error": f"MetaTrader 5 terminal not found or IPC failed: {err_desc} (Code: {err_code})",
-                "hint": "Ensure the Exness MetaTrader 5 desktop app is installed on your Windows machine and opened.",
+                "hint": "Ensure the Exness MetaTrader 5 desktop app is opened and logged into an active account.",
             }
+            return self._last_error_result
 
-        # If credentials provided, attempt explicit login
-        if self.login and self.server:
+        # Check if the MT5 desktop terminal already has an active, connected session
+        existing_info = mt5.account_info()
+        term_info = mt5.terminal_info()
+        already_connected = bool(
+            existing_info is not None
+            and getattr(existing_info, "login", 0) > 0
+            and term_info is not None
+            and getattr(term_info, "connected", False)
+        )
+
+        # If credentials provided and terminal is either not connected or on a different login, attempt explicit login
+        if self.login and self.server and (not already_connected or existing_info.login != self.login):
             login_kwargs = {"login": self.login, "server": self.server}
             if self.password:
                 login_kwargs["password"] = self.password
@@ -76,18 +97,26 @@ class MT5Client:
             if not authorized:
                 err_code, err_desc = mt5.last_error()
                 logger.warning(f"MT5 login failed for account {self.login} on {self.server}: {err_code} - {err_desc}")
-                return {
-                    "success": False,
-                    "error": f"Login to Exness server '{self.server}' failed: {err_desc} (Code: {err_code})",
-                    "login": self.login,
-                    "server": self.server,
-                }
+                # If the desktop terminal was already logged into another valid account, keep using it
+                fallback_info = mt5.account_info()
+                if not (fallback_info and getattr(fallback_info, "login", 0) > 0 and getattr(mt5.terminal_info(), "connected", False)):
+                    self._last_failed_at = now
+                    self._last_error_result = {
+                        "success": False,
+                        "error": f"Login to Exness server '{self.server}' failed: {err_desc} (Code: {err_code})",
+                        "login": self.login,
+                        "server": self.server,
+                    }
+                    return self._last_error_result
 
         account_info = mt5.account_info()
         if account_info is None:
-            return {"success": False, "error": "Failed to retrieve account details from MT5."}
+            self._last_failed_at = now
+            self._last_error_result = {"success": False, "error": "Failed to retrieve account details from MT5."}
+            return self._last_error_result
 
         self._connected = True
+        self._last_error_result = None
         return {
             "success": True,
             "login": account_info.login,
