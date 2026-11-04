@@ -225,7 +225,10 @@ def run_agent_cycle(user, agent: Optional[Agent] = None, symbol: Optional[str] =
     from .multi_timeframe import MultiTimeframeService
     from .economic_calendar import EconomicCalendarService
     from .session_filter import SessionFilterService
+    from .trade_monitor import TradeMonitorService
 
+    # Auto-manage existing open positions (+1R breakeven lock) at start of cycle
+    protection_summary = TradeMonitorService.auto_manage_open_positions(breakeven_trigger_r=1.0)
     session_info = SessionFilterService.get_current_session_info()
 
     for sym in symbols_to_scan:
@@ -298,7 +301,8 @@ def run_agent_cycle(user, agent: Optional[Agent] = None, symbol: Optional[str] =
         )
 
         if can_auto_trade and suggested_side:
-            qty = 1000.0
+            active_broker = OrderExecutionService.get_active_broker()
+            qty = 0.01 if active_broker == "mt5" else 1000.0
             order_res = OrderExecutionService.execute_order(
                 symbol=sym,
                 side=suggested_side,

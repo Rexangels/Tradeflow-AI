@@ -49,7 +49,28 @@ class MultiTimeframeService:
         m15_direction = m15_analysis["direction"]
         m15_indicators = m15_analysis["indicators"]
 
-        # ── 4H macro bias (used as anchor in swing, awareness-only in intraday) ──
+        # ── 4H macro bias & formal regime classification (regime.py) ──
+        from .regime import classify_regime
+        from .trend_breakout import _calculate_atr, _calculate_ema, classify_symbol
+
+        h4_candles = h4_analysis.get("candles_series") or []
+        h4_closes = [float(c["close"]) for c in h4_candles] if h4_candles else [h4_price]
+        h4_ema50_series = _calculate_ema(h4_closes, 50) if len(h4_closes) >= 2 else [h4_indicators["ema50"]]
+        h4_atr_raw = _calculate_atr(h4_candles, 14) if len(h4_candles) >= 2 else [h4_indicators["atr"]]
+        h4_atr_series = [v for v in h4_atr_raw if v == v]
+        spec = classify_symbol(norm_sym, h4_price)
+
+        regime_info = classify_regime(
+            ema20=h4_indicators["ema20"],
+            ema50=h4_indicators["ema50"],
+            ema200=h4_indicators["ema200"],
+            price=h4_price,
+            atr=h4_indicators["atr"],
+            atr_series=h4_atr_series,
+            ema50_series=h4_ema50_series,
+            pip_size=spec["pip_size"],
+        )
+
         h4_is_bullish = (
             h4_price > h4_indicators["ema200"]
             and h4_indicators["ema50"] >= h4_indicators["ema200"]
@@ -80,9 +101,13 @@ class MultiTimeframeService:
                 h1_direction, h1_indicators, h1_analysis,
                 m15_direction, m15_indicators, m15_analysis,
                 h4_indicators, h4_price, h4_analysis,
+                regime_info=regime_info,
             )
 
         result["mode"] = mode
+        result["regime"] = regime_info["regime"]
+        result["regime_permitted"] = regime_info["permitted"]
+        result["regime_features"] = regime_info["features"]
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -95,6 +120,7 @@ class MultiTimeframeService:
         h1_direction, h1_indicators, h1_analysis,
         m15_direction, m15_indicators, m15_analysis,
         h4_indicators, h4_price, h4_analysis,
+        regime_info: dict | None = None,
     ) -> dict[str, Any]:
         # Canonical rule from trend_breakout module (single source of truth).
         from .trend_breakout import evaluate_swing_alignment
@@ -105,6 +131,22 @@ class MultiTimeframeService:
         confluence_quality = align["quality"]
         composite_score = align["score"]
         suggested_side = align["side"]
+
+        m15_trigger = m15_analysis.get("trigger_type", "none")
+
+        # Hard regime veto on abnormal volatility expansion
+        if regime_info and regime_info.get("regime") == "volatility_expansion":
+            is_aligned = False
+            suggested_side = None
+            confluence_quality = "VOLATILITY_EXPANSION"
+            composite_score = 25.0
+            rejection_reason = (
+                "VOLATILITY EXPANSION VETO: H4 ATR spiked into top decile (>1.5x median). "
+                "Stop distances are unreliable; stand down until volatility normalizes."
+            )
+        elif is_aligned and m15_trigger in ("pullback_rejection", "donchian_breakout"):
+            # Reward structured pullback-to-value or range-breakout entries over late momentum
+            composite_score = min(96.0, composite_score + 6.0)
 
         entry_price, sl, tp, rr_ratio = cls._build_execution(
             norm_sym, disp_sym, is_aligned, suggested_side, m15_indicators, m15_analysis
@@ -133,6 +175,7 @@ class MultiTimeframeService:
             "m15": {
                 "direction": m15_direction,
                 "confidence_pct": m15_analysis["confidence_pct"],
+                "trigger_type": m15_trigger,
                 "rsi": m15_indicators["rsi"],
                 "atr_display": cls._atr_display(norm_sym, m15_indicators, m15_analysis),
                 "atr_pips": m15_analysis["atr_pips"],

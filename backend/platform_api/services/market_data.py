@@ -101,7 +101,7 @@ def format_display_symbol(symbol: str) -> str:
     norm = normalize_symbol(symbol)
     crypto_bases = {"BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB", "XAU", "XAG"}
     for base in crypto_bases:
-        if norm.startswith(base) and norm.endswith("USD"):
+        if norm.startswith(base) and (norm.endswith("USD") or norm.endswith("USDT")):
             return f"{base}/USD"
         if norm == base:
             return f"{base}/USD"
@@ -169,9 +169,11 @@ def get_forex_quote(symbol: str) -> dict:
     }
 
 
-def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int) -> list[dict]:
+def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int, include_forming: bool = False) -> list[dict]:
     """
     Fetch real historical candles directly from connected Exness MT5 terminal.
+    By default (include_forming=False), starts at pos=1 (last completed bar)
+    so unclosed forming bars never cause mid-bar indicator repainting.
     """
     try:
         from .mt5_client import get_mt5_client
@@ -191,7 +193,11 @@ def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int) -> list[dict]:
             "1d": mt5.TIMEFRAME_D1,
         }
         mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
-        rates = mt5.copy_rates_from_pos(actual, mt5_tf, 0, limit)
+        start_pos = 0 if include_forming else 1
+        rates = mt5.copy_rates_from_pos(actual, mt5_tf, start_pos, limit)
+        if rates is None or len(rates) == 0:
+            # Fallback to pos 0 if terminal only has 1 bar cached
+            rates = mt5.copy_rates_from_pos(actual, mt5_tf, 0, limit)
         if rates is None or len(rates) == 0:
             return []
         candles = []

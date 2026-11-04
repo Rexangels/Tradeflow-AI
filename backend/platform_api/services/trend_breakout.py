@@ -199,6 +199,7 @@ def score_single_timeframe(
     long_pts = 0
     short_pts = 0
     reasons: list[str] = []
+    trigger_type = "none"
 
     if price > ema20 > ema50:
         long_pts += 3
@@ -214,18 +215,19 @@ def score_single_timeframe(
         short_pts += 1
         reasons.append("Price below EMA200 macro trend.")
 
-    if 40 <= rsi <= 65 and price > ema20:
+    # Pure trend momentum (never penalize strong trend breakouts as mean-reversion shorts)
+    if 40 <= rsi <= 68 and price > ema20:
         long_pts += 2
-        reasons.append(f"RSI {round(rsi,1)} bullish momentum, not overbought.")
-    elif 35 <= rsi <= 60 and price < ema20:
-        short_pts += 2
-        reasons.append(f"RSI {round(rsi,1)} bearish momentum, not oversold.")
-    elif rsi < 30:
+        reasons.append(f"RSI {round(rsi,1)} bullish momentum, healthy runway.")
+    elif rsi > 68 and price > ema20 > ema50:
         long_pts += 1
-        reasons.append(f"RSI {round(rsi,1)} oversold bounce zone.")
-    elif rsi > 70:
+        reasons.append(f"RSI {round(rsi,1)} strong bullish impulse.")
+    elif 32 <= rsi <= 60 and price < ema20:
+        short_pts += 2
+        reasons.append(f"RSI {round(rsi,1)} bearish momentum, healthy runway.")
+    elif rsi < 32 and price < ema20 < ema50:
         short_pts += 1
-        reasons.append(f"RSI {round(rsi,1)} overbought fade zone.")
+        reasons.append(f"RSI {round(rsi,1)} strong bearish impulse.")
 
     if macd > sig and h > 0:
         long_pts += 2
@@ -234,12 +236,42 @@ def score_single_timeframe(
         short_pts += 2
         reasons.append("MACD histogram negative.")
 
-    if price <= bb_l * 1.002:
-        long_pts += 1
-        reasons.append("Price at lower Bollinger support.")
-    elif price >= bb_u * 0.998:
-        short_pts += 1
-        reasons.append("Price at upper Bollinger resistance.")
+    # Setup A: Pullback-to-Value Rejection (EMA20/50 zone test + directional close recovery)
+    if len(candles) >= 3:
+        last_bar = candles[-1]
+        prev_bar = candles[-2]
+        prev2_bar = candles[-3]
+        bullish_close = float(last_bar["close"]) > float(last_bar["open"])
+        bearish_close = float(last_bar["close"]) < float(last_bar["open"])
+        recent_low = min(float(last_bar["low"]), float(prev_bar["low"]), float(prev2_bar["low"]))
+        recent_high = max(float(last_bar["high"]), float(prev_bar["high"]), float(prev2_bar["high"]))
+
+        if ema20 >= ema50 and price > ema20 and bullish_close and recent_low <= ema20 * 1.0015 and recent_low >= ema50 * 0.997:
+            long_pts += 2
+            trigger_type = "pullback_rejection"
+            reasons.append("Bullish pullback rejection off EMA20/50 value zone.")
+        elif ema20 <= ema50 and price < ema20 and bearish_close and recent_high >= ema20 * 0.9985 and recent_high <= ema50 * 1.003:
+            short_pts += 2
+            trigger_type = "pullback_rejection"
+            reasons.append("Bearish pullback rejection off EMA20/50 value zone.")
+
+    # Setup B: Donchian-20 Range Breakout (pure breakout continuation, never faded in trend module)
+    dc = donchian_break(candles, 20)
+    if dc["break"] == "up" and price > ema50:
+        long_pts += 2
+        if trigger_type == "none":
+            trigger_type = "donchian_breakout"
+        reasons.append("Donchian-20 upside range breakout.")
+    elif dc["break"] == "down" and price < ema50:
+        short_pts += 2
+        if trigger_type == "none":
+            trigger_type = "donchian_breakout"
+        reasons.append("Donchian-20 downside range breakout.")
+    elif trigger_type == "none":
+        if long_pts >= 5:
+            trigger_type = "trend_momentum"
+        elif short_pts >= 5:
+            trigger_type = "trend_momentum"
 
     total = max(long_pts, short_pts)
     confidence = round(min(1.0, total / 9.0), 2)
@@ -262,6 +294,7 @@ def score_single_timeframe(
         "direction": direction,
         "confidence": confidence,
         "confidence_pct": round(confidence * 100.0, 1),
+        "trigger_type": trigger_type,
         "reasons": reasons,
         "atr": round(atr, decimals + 1),
         "atr_distance": round(sl_dist, decimals + 1),
@@ -400,6 +433,7 @@ def evaluate_trend_breakout(
 def single_timeframe_signal(
     candles_so_far: list[dict],
     symbol: str = "EURUSD",
+    include_votes: bool = True,
 ) -> dict[str, Any]:
     """Backtest entry point when only one timeframe is available.
 
@@ -414,8 +448,8 @@ def single_timeframe_signal(
         from .regime import classify_regime
 
         closes_all = [float(c["close"]) for c in candles_so_far]
-        ema50_series = _calculate_ema(closes_all, 50)
-        atr_series_raw = _calculate_atr(candles_so_far, 14)
+        ema50_series = _calculate_ema(closes_all[-65:], 50)
+        atr_series_raw = _calculate_atr(candles_so_far[-120:], 14)
         atr_series = [v for v in atr_series_raw if v == v]
         spec = classify_symbol(symbol, sig["price"])
         reg = classify_regime(
@@ -459,7 +493,7 @@ def single_timeframe_signal(
         "take_profit": sig["take_profit"],
         "indicators": sig["indicators"],
         "reasons": sig["reasons"],
-        "votes": compute_votes(candles_so_far, symbol),
+        "votes": compute_votes(candles_so_far, symbol, _precomputed_sig=sig) if include_votes else {},
     }
 
 
@@ -478,12 +512,16 @@ def donchian_break(candles: list[dict], lookback: int = 20) -> dict[str, Any]:
     return {"break": None, "upper": upper, "lower": lower, "range_atr": upper - lower}
 
 
-def compute_votes(candles: list[dict], symbol: str = "EURUSD") -> dict[str, Any]:
+def compute_votes(
+    candles: list[dict],
+    symbol: str = "EURUSD",
+    _precomputed_sig: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Independent vote tally: trend / momentum / breakout / mean_reversion.
 
     Each vote is testable alone. Never blend mean-reversion into trend.
     """
-    sig = score_single_timeframe(candles, symbol)
+    sig = _precomputed_sig or score_single_timeframe(candles, symbol)
     closes = [float(c["close"]) for c in candles]
     price = sig["price"]
     ind = sig["indicators"]

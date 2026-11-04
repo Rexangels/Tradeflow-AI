@@ -18,7 +18,26 @@ import type {
   TradingPosition,
 } from "../shared";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
+function resolveCandidateApiBases(): string[] {
+  const host =
+    typeof window !== "undefined" && window.location.hostname
+      ? window.location.hostname
+      : "localhost";
+  const envBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  const candidates = [
+    `http://${host}:8000`,
+    `http://${host}:4000`,
+    ...(envBase ? [envBase] : []),
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:4000",
+    "http://127.0.0.1:4000",
+  ];
+  return Array.from(new Set(candidates));
+}
+
+const CANDIDATE_API_BASES = resolveCandidateApiBases();
+let activeApiBase = CANDIDATE_API_BASES[0];
 
 async function extractErrorMessage(response: Response): Promise<string> {
   const body = await response.text();
@@ -47,8 +66,30 @@ async function extractErrorMessage(response: Response): Promise<string> {
   return body;
 }
 
+async function fetchWithFallback(path: string, init: RequestInit): Promise<Response> {
+  const orderedBases = [
+    activeApiBase,
+    ...CANDIDATE_API_BASES.filter((base) => base !== activeApiBase),
+  ];
+  let lastError: unknown;
+
+  for (const base of orderedBases) {
+    try {
+      const response = await fetch(`${base}/api/v1${path}`, init);
+      activeApiBase = base;
+      return response;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Unable to connect to the TradeFlow backend API (checked ports 8000 and 4000).");
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}/api/v1${path}`, {
+  const response = await fetchWithFallback(path, {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",

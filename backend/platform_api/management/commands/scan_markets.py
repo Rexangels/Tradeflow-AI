@@ -31,6 +31,16 @@ class Command(BaseCommand):
         from platform_api.services.multi_timeframe import MultiTimeframeService
         from platform_api.services.order_execution import OrderExecutionService
         from platform_api.services.session_filter import SessionFilterService
+        from platform_api.services.trade_monitor import TradeMonitorService
+
+        # 0. Protect any open trades that have reached +1.0R excursion with Breakeven stop
+        be_report = TradeMonitorService.auto_manage_open_positions(breakeven_trigger_r=1.0)
+        if be_report.get("promoted_to_breakeven"):
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Auto-promoted {len(be_report['promoted_to_breakeven'])} position(s) to +1R Breakeven."
+                )
+            )
 
         raw = (options.get("symbols") or "").strip()
         if raw:
@@ -114,10 +124,12 @@ class Command(BaseCommand):
                 )
                 flips.append(f"{sym} {direction} ({mtf['composite_score']}) id={sig.id}")
                 if options.get("auto_trade") and mtf["composite_score"] >= 65:
+                    active_broker = OrderExecutionService.get_active_broker()
+                    order_qty = 0.01 if active_broker == "mt5" else 1000.0
                     OrderExecutionService.execute_order(
                         symbol=sym,
                         side=mtf["suggested_side"],
-                        qty=1000.0,
+                        qty=order_qty,
                         stop_loss=mtf["stop_loss"],
                         take_profit=mtf["take_profit"],
                         agent=agent,

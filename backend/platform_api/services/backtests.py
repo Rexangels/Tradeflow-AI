@@ -313,6 +313,27 @@ def _spread_half_cost(symbol: str, reference_price: float, spread_pips_override=
     return (sp * spec["pip_size"]) / 2.0
 
 
+def _resample_higher_timeframe(candles: list[dict], factor: int = 4) -> list[dict]:
+    """Aggregate completed lower-timeframe bars into higher-timeframe bars (e.g. 4x = 15m->1h or 1h->4h) with zero lookahead."""
+    if factor <= 1 or len(candles) < factor:
+        return candles
+    usable = (len(candles) // factor) * factor
+    if usable < factor:
+        return []
+    out: list[dict] = []
+    for i in range(0, usable, factor):
+        chunk = candles[i : i + factor]
+        out.append({
+            "time": chunk[-1]["time"],
+            "open": float(chunk[0]["open"]),
+            "high": max(float(c["high"]) for c in chunk),
+            "low": min(float(c["low"]) for c in chunk),
+            "close": float(chunk[-1]["close"]),
+            "volume": sum(float(c.get("volume", 0.0)) for c in chunk),
+        })
+    return out
+
+
 def _simulate_trend_breakout(symbol: str, timeframe: str, agent: dict, settings: dict, candles: list[dict]) -> dict:
     """Realistic trend/breakout simulation. Same rules as the live scanner.
 
@@ -364,7 +385,7 @@ def _simulate_trend_breakout(symbol: str, timeframe: str, agent: dict, settings:
         exe_bar = candles[sig_idx + 1]
         # Pure signal on completed bars only (no lookahead into exe_bar).
         try:
-            sig = single_timeframe_signal(candles[: sig_idx + 1], symbol=norm_sym)
+            sig = single_timeframe_signal(candles[: sig_idx + 1], symbol=norm_sym, include_votes=False)
         except Exception:
             continue
         if sig["regime"] == "trending":
@@ -450,10 +471,30 @@ def _simulate_trend_breakout(symbol: str, timeframe: str, agent: dict, settings:
                 trades.append(exit_trade)
                 closed_round_trips.append(exit_trade)
                 position = None
+            elif settings.get("breakevenAt1R", True) and not position.get("be_moved"):
+                # Automated +1R Breakeven Protection (matches live TradeMonitorService.auto_manage_open_positions)
+                sl_d = position.get("sl_dist") or 0.0
+                if sl_d > 0 and position.get("mfe", 0.0) >= sl_d * 1.0:
+                    if position["side"] == "long":
+                        position["sl"] = max(position["sl"], position["entry"] + half_spread + position["entry"] * slip)
+                    else:
+                        position["sl"] = min(position["sl"], position["entry"] - half_spread - position["entry"] * slip)
+                    position["be_moved"] = True
 
-        # 2) New entry at execution-bar open if flat and signal aligned.
+        # 2) New entry at execution-bar open if flat and signal aligned (with HTF 4x structural check).
         if position is None:
             side = sig.get("side")  # buy/sell or None (vetoed)
+            if side is not None and len(candles[: sig_idx + 1]) >= 80:
+                from .trend_breakout import _calculate_ema as _htf_ema, h4_bias as _htf_bias
+
+                htf_bars = _resample_higher_timeframe(candles[: sig_idx + 1], factor=4)
+                if len(htf_bars) >= 20:
+                    htf_closes = [c["close"] for c in htf_bars]
+                    htf_e50 = _htf_ema(htf_closes, min(50, max(2, len(htf_closes) - 1)))[-1]
+                    htf_e200 = _htf_ema(htf_closes, min(200, max(2, len(htf_closes) - 1)))[-1]
+                    htf_macro = _htf_bias(htf_closes[-1], htf_e50, htf_e200)
+                    if (side == "buy" and htf_macro == "BEARISH") or (side == "sell" and htf_macro == "BULLISH"):
+                        side = None
             if side is None:
                 if sig.get("direction") in ("long", "short"):
                     blocked_by_regime += 1

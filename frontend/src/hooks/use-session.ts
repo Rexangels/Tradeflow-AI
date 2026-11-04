@@ -6,5 +6,8 @@ export function useSession() {
   return useQuery({
     queryKey: ["session"],
     queryFn: api.getSession,
+    retry: false,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   });
 }

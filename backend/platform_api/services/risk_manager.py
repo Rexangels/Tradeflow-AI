@@ -8,20 +8,60 @@ from .alpaca_client import get_alpaca_client
 logger = logging.getLogger(__name__)
 
 DEFAULT_RULES = {
-    "max_risk_pct": 2.0,         # Maximum 2% risk of total equity per trade
-    "max_positions": 5,          # Maximum 5 concurrent open positions
-    "daily_loss_limit_pct": 5.0, # Stop trading if realized/unrealized loss exceeds 5% today
-    "min_rr_ratio": 1.5,         # Minimum 1.5 reward-to-risk ratio
-    "require_stop_loss": True,   # Mandatory stop-loss on every order
-    "max_position_pct": 10.0,    # Max total notional allocation for a single position (10% of equity)
+    "max_risk_pct": 2.0,                   # Maximum 2% risk of total equity per trade
+    "max_positions": 5,                    # Maximum 5 concurrent open positions
+    "max_usd_directional_positions": 2,    # Maximum 2 correlated same-direction USD positions
+    "daily_loss_limit_pct": 5.0,           # Stop trading if realized/unrealized loss exceeds 5% today
+    "min_rr_ratio": 1.5,                   # Minimum 1.5 reward-to-risk ratio
+    "require_stop_loss": True,             # Mandatory stop-loss on every order
+    "max_position_pct": 10.0,              # Max single-position notional allocation on unleveraged accounts
 }
 
 
 class RiskManager:
     """
-    Enforces risk constraints, position sizing, and loss controls
-    prior to order placement. The AI cannot bypass these rules.
+    Enforces risk constraints, position sizing, currency correlation limits,
+    and loss controls prior to order placement. The AI cannot bypass these rules.
     """
+
+    @staticmethod
+    def get_usd_direction(symbol: str, side: str) -> Optional[str]:
+        """
+        Determines whether a trade is net LONG_USD or SHORT_USD so the portfolio
+        cannot accidentally stack 5 identical USD directional bets across pairs.
+        """
+        clean = symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+        for suffix in ("M", "C"):
+            if len(clean) > 6 and clean.endswith(suffix):
+                clean = clean[:-1]
+        is_buy = side.lower() in ("buy", "long")
+        if len(clean) == 6 and clean.startswith("USD"):
+            return "LONG_USD" if is_buy else "SHORT_USD"
+        if clean.endswith("USD") or clean.endswith("USDT"):
+            return "SHORT_USD" if is_buy else "LONG_USD"
+        return None
+
+    @staticmethod
+    def unit_risk_in_usd(symbol: str, current_price: float, stop_loss: float) -> float:
+        """
+        Converts price distance |current_price - stop_loss| into USD risk per 1 base unit.
+        - For XXX/USD pairs (EUR/USD, GBP/USD, BTC/USD, XAU/USD): 1 unit risk is already in USD.
+        - For USD/XXX pairs (USD/JPY, USD/CAD, USD/CHF): 1 unit risk in quote currency
+          is divided by current_price to convert to USD.
+        - For cross pairs ending in JPY (EUR/JPY, GBP/JPY): approximate JPY->USD using 150.0
+          or current_price if ~100-200.
+        """
+        raw_dist = abs(current_price - stop_loss)
+        if raw_dist <= 0 or current_price <= 0:
+            return 0.0
+        clean = symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+        if len(clean) >= 6 and clean[:3] == "USD" and not clean.endswith("USD"):
+            return raw_dist / current_price
+        if "JPY" in clean and not clean.startswith("USD"):
+            # Cross JPY pair (e.g., EURJPY, GBPJPY): convert JPY distance to approximate USD
+            usd_jpy_approx = 152.0
+            return raw_dist / usd_jpy_approx
+        return raw_dist
 
     @classmethod
     def get_rule_value(cls, key: str, default: Any = None) -> Any:
@@ -137,19 +177,25 @@ class RiskManager:
                         "rr_ratio": rr_ratio,
                     }
 
-        # 3. Fetch Account Info (Equity, Open Positions)
+        # 3. Fetch Account Info (Equity, Leverage, Active Broker)
         from .order_execution import OrderExecutionService
         try:
             acc = account_data or OrderExecutionService.get_account_overview()
             equity = float(acc.get("equity") or acc.get("cash") or 500.0)
+            leverage = float(acc.get("leverage") or (500.0 if acc.get("broker") == "mt5" else 1.0))
+            is_mt5 = acc.get("broker") == "mt5" or acc.get("active_broker") == "mt5"
+            is_cent = bool(acc.get("isCentAccount", False))
         except Exception as exc:
             logger.warning(f"Unable to fetch account overview for risk check: {exc}")
             equity = 500.0
+            leverage = 1.0
+            is_mt5 = False
+            is_cent = False
 
-        # 4. Open Positions Count Check
+        # 4. Open Positions Count & Correlated USD Exposure Check
+        max_usd_dir = int(rules.get("max_usd_directional_positions", 2))
         try:
             positions = OrderExecutionService.get_open_positions()
-            # If we already have a position in this symbol, we are modifying/adding, else count towards max
             existing_syms = {p.get("symbol", "").replace("/", "") for p in positions}
             clean_sym = symbol.replace("/", "")
             if clean_sym not in existing_syms and len(positions) >= max_positions:
@@ -158,10 +204,27 @@ class RiskManager:
                     "reason": f"Risk violation: Maximum open positions ({max_positions}) reached. Currently open: {len(positions)}.",
                     "suggested_qty": 0.0,
                 }
+            # Check correlated USD directional concentration
+            proposed_usd_dir = cls.get_usd_direction(symbol, side)
+            if proposed_usd_dir and clean_sym not in existing_syms:
+                same_dir_positions = [
+                    p.get("symbol", "")
+                    for p in positions
+                    if cls.get_usd_direction(p.get("symbol", ""), p.get("side", "buy")) == proposed_usd_dir
+                ]
+                if len(same_dir_positions) >= max_usd_dir:
+                    return {
+                        "approved": False,
+                        "reason": (
+                            f"Risk violation: Correlated USD exposure limit ({max_usd_dir} {proposed_usd_dir} positions) "
+                            f"reached ({', '.join(same_dir_positions)}). Avoid stacking identical USD macro bets."
+                        ),
+                        "suggested_qty": 0.0,
+                    }
         except Exception:
             pass
 
-        # 5. Daily Loss Limit Check
+        # 5. Daily Loss Limit Check (Realized + Unrealized Drawdown Circuit Breaker)
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         daily_trades = TradeLog.objects.filter(created_at__gte=today_start, realized_pnl__isnull=False)
         daily_realized_loss = sum(t.realized_pnl for t in daily_trades if t.realized_pnl < 0)
@@ -173,19 +236,32 @@ class RiskManager:
                 "suggested_qty": 0.0,
             }
 
-        # 6. Position Sizing & Max Risk Calculation
+        # 6. Position Sizing & Max Risk Calculation (Unit vs Lot & Quote-Currency Aware)
         max_risk_usd = (max_risk_pct / 100.0) * equity
         suggested_qty = qty
         risk_amount_usd = 0.0
         risk_pct = 0.0
 
+        clean_norm = symbol.replace("/", "").replace("_", "").replace("-", "").upper()
+        is_crypto = any(c in clean_norm for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB")) or current_price > 500
+        # Detect whether caller passed MT5 FX lots (e.g. 0.01 lot) vs base units (e.g. 1000 units)
+        qty_is_lots = is_mt5 and not is_crypto and 0 < qty <= 10.0
+        lot_unit_multiplier = 1000.0 if is_cent else 100000.0
+        effective_units = (qty * lot_unit_multiplier) if qty_is_lots else qty
+
         if stop_loss is not None:
-            risk_per_unit = abs(current_price - stop_loss)
+            risk_per_unit = cls.unit_risk_in_usd(symbol, current_price, stop_loss)
             if risk_per_unit > 0:
-                # suggested qty so total risk <= max_risk_usd
                 max_units = max_risk_usd / risk_per_unit
-                suggested_qty = min(qty, round(max_units, 2))
-                risk_amount_usd = round(suggested_qty * risk_per_unit, 2)
+                if qty_is_lots:
+                    max_lots = max(0.01, round(max_units / lot_unit_multiplier, 2))
+                    suggested_qty = min(qty, max_lots)
+                    effective_units = suggested_qty * lot_unit_multiplier
+                else:
+                    suggested_qty = min(qty, round(max_units, 2))
+                    effective_units = suggested_qty
+
+                risk_amount_usd = round(effective_units * risk_per_unit, 2)
                 risk_pct = round((risk_amount_usd / equity) * 100.0, 2)
 
                 if risk_pct > max_risk_pct + 0.1:  # small tolerance
@@ -197,11 +273,13 @@ class RiskManager:
                         "risk_pct": risk_pct,
                     }
 
-        # 7. Max Single Position Notional Allocation
-        notional = suggested_qty * current_price
-        max_notional = (max_position_pct / 100.0) * equity
-        if notional > max_notional * 1.5:  # allow leverage up to reasonable bound
-            suggested_qty = round(max_notional / current_price, 2)
+        # 7. Max Single Position Notional Allocation (Applies to unleveraged accounts or when no SL is set)
+        if stop_loss is None or leverage <= 5.0:
+            notional = effective_units * current_price
+            max_notional = (max_position_pct / 100.0) * equity * max(1.0, leverage)
+            if notional > max_notional * 1.5 and current_price > 0:
+                capped_units = max_notional / current_price
+                suggested_qty = round(capped_units / lot_unit_multiplier, 2) if qty_is_lots else round(capped_units, 2)
 
         return {
             "approved": True,

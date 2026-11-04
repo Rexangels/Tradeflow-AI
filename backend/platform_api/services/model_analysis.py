@@ -3,7 +3,7 @@ from __future__ import annotations
 from itertools import product
 from math import exp, log, sqrt
 
-from .indicators import calculate_bollinger_bands, calculate_ema, calculate_rsi
+from .indicators import calculate_atr, calculate_bollinger_bands, calculate_ema, calculate_rsi
 
 
 HORIZON_BY_TIMEFRAME = {
@@ -223,6 +223,7 @@ def _build_samples(candles: list[dict], horizon: int, settings: dict) -> list[di
     ema_slow = calculate_ema(closes, 21)
     middle_band, upper_band, lower_band = calculate_bollinger_bands(closes, 20, 2)
     rsi = calculate_rsi(closes, 14)
+    atr_series = calculate_atr(candles, 14)
     threshold = max(0.001, (settings.get("feeRate", 0.001) + settings.get("slippageRate", 0.0005)) * 2)
 
     samples = []
@@ -241,13 +242,34 @@ def _build_samples(candles: list[dict], horizon: int, settings: dict) -> list[di
 
         future_close = closes[index + horizon]
         future_return = (future_close / close_price) - 1 if close_price else 0
-        label = 1 if future_return > threshold else 0
+
+        # Triple-Barrier Outcome Labeling (Lopez de Prado):
+        # Evaluates whether price reaches +1.5R/2R target before hitting -1R ATR stop within `horizon` bars.
+        cur_atr = atr_series[index] if (index < len(atr_series) and atr_series[index] == atr_series[index] and atr_series[index] > 0) else (close_price * 0.005)
+        sl_dist = max(cur_atr * 1.5, close_price * threshold)
+        tp_dist = sl_dist * 1.5
+        upper_barrier = close_price + tp_dist
+        lower_barrier = close_price - sl_dist
+
+        barrier_outcome = None
+        for step_idx in range(index + 1, index + horizon + 1):
+            bar_low = float(candles[step_idx]["low"])
+            bar_high = float(candles[step_idx]["high"])
+            if bar_low <= lower_barrier:
+                barrier_outcome = 0  # Stop-loss barrier touched first
+                break
+            if bar_high >= upper_barrier:
+                barrier_outcome = 1  # Profit barrier touched first
+                break
+
+        label = barrier_outcome if barrier_outcome is not None else (1 if future_return > threshold else 0)
 
         samples.append(
             {
                 "time": candles[index]["time"],
                 "futureReturn": future_return,
                 "label": label,
+                "tripleBarrierOutcome": barrier_outcome,
                 "features": {
                     "ema_spread": ((ema_fast[index] - ema_slow[index]) / close_price) if close_price else 0,
                     "rsi_centered": (rsi[index] - 50) / 50,

@@ -573,3 +573,93 @@ class TradeMonitorService:
             "suggested_take_profit": suggested_take_profit,
             "breakeven_price": details["breakeven_price"],
         }
+
+    @classmethod
+    def auto_manage_open_positions(cls, breakeven_trigger_r: float = 1.0) -> dict[str, Any]:
+        """
+        Automated in-flight position guardian:
+        Checks all open positions and promotes Stop-Loss to Zero-Risk Breakeven
+        once unrealized favorable excursion reaches +1.0R (or `breakeven_trigger_r`).
+        Eliminates '+1R winners turning into -1R full losers'.
+        """
+        from .order_execution import OrderExecutionService
+
+        try:
+            positions = OrderExecutionService.get_open_positions()
+        except Exception as exc:
+            logger.warning("auto_manage_open_positions could not fetch positions: %s", exc)
+            return {"checked": 0, "promoted_to_breakeven": [], "error": str(exc)}
+
+        promoted: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        for pos in positions:
+            sym = pos.get("symbol", "")
+            disp_sym = format_display_symbol(sym)
+            side = (pos.get("side") or "buy").lower()
+            is_long = side in ("buy", "long")
+            entry_px = float(pos.get("avg_entry_price") or pos.get("entry_price") or 0.0)
+            curr_px = float(pos.get("current_price") or entry_px)
+            pos_sl = pos.get("stop_loss")
+
+            if entry_px <= 0 or curr_px <= 0:
+                continue
+
+            # Find open TradeLog to get original initial stop-loss distance
+            trade_log = (
+                TradeLog.objects.filter(symbol=disp_sym, status="open")
+                .order_by("-created_at")
+                .first()
+            )
+            ref_sl = float(pos_sl) if pos_sl else (float(trade_log.stop_loss) if (trade_log and trade_log.stop_loss) else 0.0)
+            if ref_sl <= 0:
+                skipped.append({"symbol": disp_sym, "reason": "no_stop_loss_reference"})
+                continue
+
+            # Check if stop-loss is already at or above breakeven
+            if is_long and ref_sl >= entry_px:
+                skipped.append({"symbol": disp_sym, "reason": "already_at_breakeven"})
+                continue
+            if not is_long and ref_sl <= entry_px:
+                skipped.append({"symbol": disp_sym, "reason": "already_at_breakeven"})
+                continue
+
+            sl_dist = abs(entry_px - ref_sl)
+            if sl_dist <= 0:
+                continue
+
+            favorable_move = (curr_px - entry_px) if is_long else (entry_px - curr_px)
+            current_r = favorable_move / sl_dist
+
+            if current_r >= breakeven_trigger_r:
+                res = cls.apply_protection(disp_sym, protect_type="breakeven")
+                if res.get("success"):
+                    new_sl = None
+                    placed = res.get("placed_orders") or []
+                    if placed:
+                        new_sl = placed[0].get("stop_price")
+                    if trade_log and new_sl:
+                        trade_log.stop_loss = float(new_sl)
+                        trade_log.save(update_fields=["stop_loss", "updated_at"])
+                    promoted.append({
+                        "symbol": disp_sym,
+                        "side": side,
+                        "entry_price": entry_px,
+                        "current_price": curr_px,
+                        "current_r": round(current_r, 2),
+                        "new_stop_loss": new_sl,
+                    })
+                else:
+                    skipped.append({"symbol": disp_sym, "reason": res.get("error", "protection_failed")})
+            else:
+                skipped.append({
+                    "symbol": disp_sym,
+                    "current_r": round(current_r, 2),
+                    "reason": f"below_{breakeven_trigger_r}R_threshold",
+                })
+
+        return {
+            "checked": len(positions),
+            "promoted_to_breakeven": promoted,
+            "skipped": skipped,
+        }

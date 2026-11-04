@@ -1,9 +1,6 @@
 from math import sqrt
 from typing import Any, Optional
 
-import numpy as np
-import pandas as pd
-
 from .market_data import format_display_symbol, get_candles, latest_price, normalize_symbol
 
 
@@ -126,7 +123,7 @@ def analyze_forex_confluence(
     disp_sym = format_display_symbol(symbol)
 
     if candles is None or len(candles) < 30:
-        candles = get_candles(norm_sym, timeframe=timeframe, limit=120)
+        candles = get_candles(norm_sym, timeframe=timeframe, limit=300)
 
     closes = [float(c["close"]) for c in candles]
     live_px = latest_price(norm_sym)
@@ -185,6 +182,7 @@ def analyze_forex_confluence(
         "suggested_side": side,
         "confidence": confidence,
         "confidence_pct": round(confidence * 100.0, 1),
+        "trigger_type": pure.get("trigger_type", "none"),
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "rr_ratio": REWARD_RISK_MULTIPLE if stop_loss else 0.0,
@@ -202,6 +200,7 @@ def analyze_forex_confluence(
             "bb_upper": curr_bb_upper,
             "bb_lower": curr_bb_lower,
         },
+        "candles_series": candles,
     }
 
 

@@ -111,11 +111,19 @@ REST_FRAMEWORK = {
     ],
 }
 
-CORS_ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("DJANGO_CORS_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
-    if origin.strip()
-]
+CORS_ALLOWED_ORIGINS = list(
+    dict.fromkeys(
+        [
+            origin.strip()
+            for origin in os.getenv(
+                "DJANGO_CORS_ALLOWED_ORIGINS",
+                "http://localhost:3000,http://127.0.0.1:3000",
+            ).split(",")
+            if origin.strip()
+        ]
+        + ["http://localhost:3000", "http://127.0.0.1:3000"]
+    )
+)
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SECURE = not DEBUG
