@@ -14,17 +14,21 @@ from .market_data import latest_price
 FEE_RATE = 0.001
 SLIPPAGE_RATE = 0.0005
 DEFAULT_RISK_POLICY = {
-    "tradingEnabled": True,
-    "maxOrderNotional": 2500,
-    "maxOpenPositions": 3,
-    "maxDailyLoss": 500,
+    "tradingEnabled": settings.PAPER_TRADING_ENABLED,
+    "maxOrderNotional": settings.PAPER_MAX_ORDER_NOTIONAL,
+    "maxOpenPositions": settings.PAPER_MAX_OPEN_POSITIONS,
+    "maxDailyLoss": settings.PAPER_MAX_DAILY_LOSS,
 }
 
 
 def get_or_create_account(user):
     account, _ = PaperAccount.objects.get_or_create(
         owner=user,
-        defaults={"cash_balance": 10000, "equity": 10000, "realized_pnl": 0},
+        defaults={
+            "cash_balance": settings.PAPER_STARTING_BALANCE,
+            "equity": settings.PAPER_STARTING_BALANCE,
+            "realized_pnl": 0,
+        },
     )
     return account
 
@@ -217,15 +221,25 @@ def _enforce_risk_policy(account, payload: dict, risk_policy: dict, position, ma
                 f"Order rejected by risk policy: max open positions is {risk_policy['maxOpenPositions']}."
             )
 
-    daily_loss = _daily_realized_loss(account)
-    if daily_loss >= risk_policy["maxDailyLoss"]:
-        raise ValueError(
-            f"Order rejected by risk policy: daily realized loss limit of ${risk_policy['maxDailyLoss']:.2f} reached."
-        )
+    # Closing/reducing a position must remain possible after a loss limit
+    # is reached; the daily circuit breaker blocks only new long exposure.
+    if payload["side"] == "buy":
+        daily_loss = _daily_realized_loss(account)
+        if daily_loss >= risk_policy["maxDailyLoss"]:
+            raise ValueError(
+                f"Order rejected by risk policy: combined daily loss limit of ${risk_policy['maxDailyLoss']:.2f} reached."
+            )
 
 
 def _daily_realized_loss(account) -> float:
+    """Combined trailing-24h realized losses and current negative unrealized P&L."""
     day_start = timezone.now() - timedelta(hours=24)
     realized = account.orders.filter(created_at__gte=day_start, side="sell").values_list("realized_pnl", flat=True)
-    total = sum(value for value in realized if value < 0)
-    return abs(total)
+    realized_loss = abs(sum(value for value in realized if value < 0))
+    unrealized_loss = 0.0
+    for position in account.positions.filter(quantity__gt=0):
+        market_price = latest_price(position.symbol)
+        open_pnl = (market_price - position.average_entry_price) * position.quantity
+        if open_pnl < 0:
+            unrealized_loss += abs(open_pnl)
+    return realized_loss + unrealized_loss
