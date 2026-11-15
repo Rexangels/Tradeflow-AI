@@ -47,8 +47,11 @@ def build_database_config():
 
 load_env_file()
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "tradeflow-dev-secret-key")
-DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "insecure-local-development-key" if DEBUG else "")
+if not SECRET_KEY:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is false.")
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if host.strip()]
 
 INSTALLED_APPS = [
@@ -144,6 +147,14 @@ MARKET_DATA_CACHE_TTL_SECONDS = int(os.getenv("MARKET_DATA_CACHE_TTL_SECONDS", "
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 MARKET_DATA_FALLBACK_MODE = os.getenv("MARKET_DATA_FALLBACK_MODE", "synthetic" if DEBUG else "strict")
+
+# Paper-account defaults are environment-configurable so micro-account tests
+# never inherit the platform's larger demonstration balance and risk limits.
+PAPER_STARTING_BALANCE = float(os.getenv("PAPER_STARTING_BALANCE", "10000"))
+PAPER_MAX_ORDER_NOTIONAL = float(os.getenv("PAPER_MAX_ORDER_NOTIONAL", "2500"))
+PAPER_MAX_OPEN_POSITIONS = int(os.getenv("PAPER_MAX_OPEN_POSITIONS", "3"))
+PAPER_MAX_DAILY_LOSS = float(os.getenv("PAPER_MAX_DAILY_LOSS", "500"))
+PAPER_TRADING_ENABLED = os.getenv("PAPER_TRADING_ENABLED", "true").lower() == "true"
 
 
 # Trading broker configuration (Alpaca, OANDA, etc.)
