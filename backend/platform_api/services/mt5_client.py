@@ -211,6 +211,10 @@ class MT5Client:
         positions = mt5.positions_get()
         if positions is None:
             raise RuntimeError("MT5 positions_get returned no data; open positions cannot be verified.")
+        account_info = mt5.account_info()
+        if account_info is None:
+            raise RuntimeError("MT5 account currency could not be verified while reading open positions.")
+        is_cent_account = "usc" in str(account_info.currency).lower() or "cent" in str(account_info.currency).lower()
 
         result = []
         for pos in positions:
@@ -218,7 +222,8 @@ class MT5Client:
             entry_px = float(pos.price_open)
             curr_px = float(pos.price_current)
             qty_val = float(pos.volume)
-            pnl = round(float(pos.profit), 2)
+            raw_pnl = float(pos.profit)
+            pnl = round(raw_pnl / 100.0 if is_cent_account else raw_pnl, 2)
             cost_val = round(qty_val * entry_px, 2)
             market_val = round(qty_val * curr_px, 2)
             pnl_pct = round((pnl / cost_val) * 100.0, 2) if cost_val > 0 else 0.0
