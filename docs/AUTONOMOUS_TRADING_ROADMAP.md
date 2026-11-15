@@ -42,6 +42,7 @@ PAPER_MAX_ORDER_NOTIONAL=1
 PAPER_MAX_OPEN_POSITIONS=1
 PAPER_MAX_DAILY_LOSS=0.20
 PAPER_TRADING_ENABLED=true
+TRADEFLOW_MICRO_ACCOUNT_MODE=true
 ```
 
 The $1 notional cap limits each new paper buy to 10% of the starting account, while the $0.20 daily loss threshold represents 2% of the starting balance. These are conservative experiment settings, not a promise that a broker can execute comparable live orders.
