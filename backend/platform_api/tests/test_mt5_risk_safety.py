@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase, override_settings
+
+from platform_api.models import RiskRule
+from platform_api.services.risk_manager import RiskManager
 
 from platform_api.services.mt5_client import MT5Client, normalise_mt5_volume
 
@@ -33,3 +36,23 @@ class MT5VolumeSafetyTests(SimpleTestCase):
         self.assertEqual(account["equity"], 0.0)
         self.assertEqual(account["balance"], 0.0)
         self.assertEqual(account["mode"], "disconnected")
+
+
+class MicroAccountRiskProfileTests(TestCase):
+    @override_settings(TRADEFLOW_MICRO_ACCOUNT_MODE=True)
+    def test_micro_mode_caps_stale_database_risk_rules(self):
+        RiskRule.objects.create(key="max_risk_pct", value={"value": 5.0})
+        RiskRule.objects.create(key="max_positions", value={"value": 8})
+        RiskRule.objects.create(key="daily_loss_limit_pct", value={"value": 10.0})
+        RiskRule.objects.create(key="max_position_pct", value={"value": 50.0})
+        RiskRule.objects.create(key="min_rr_ratio", value={"value": 1.0})
+        RiskRule.objects.create(key="require_stop_loss", value={"value": False})
+
+        rules = RiskManager.get_all_rules()
+
+        self.assertEqual(rules["max_risk_pct"], 1.0)
+        self.assertEqual(rules["max_positions"], 1)
+        self.assertEqual(rules["daily_loss_limit_pct"], 2.0)
+        self.assertEqual(rules["max_position_pct"], 10.0)
+        self.assertEqual(rules["min_rr_ratio"], 1.5)
+        self.assertTrue(rules["require_stop_loss"])
