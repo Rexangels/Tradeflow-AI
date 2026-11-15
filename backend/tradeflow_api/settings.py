@@ -155,6 +155,7 @@ PAPER_MAX_ORDER_NOTIONAL = float(os.getenv("PAPER_MAX_ORDER_NOTIONAL", "2500"))
 PAPER_MAX_OPEN_POSITIONS = int(os.getenv("PAPER_MAX_OPEN_POSITIONS", "3"))
 PAPER_MAX_DAILY_LOSS = float(os.getenv("PAPER_MAX_DAILY_LOSS", "500"))
 PAPER_TRADING_ENABLED = os.getenv("PAPER_TRADING_ENABLED", "true").lower() == "true"
+TRADEFLOW_MICRO_ACCOUNT_MODE = os.getenv("TRADEFLOW_MICRO_ACCOUNT_MODE", "false").lower() == "true"
 
 
 # Trading broker configuration (Alpaca, OANDA, etc.)
