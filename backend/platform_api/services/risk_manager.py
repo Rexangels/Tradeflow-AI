@@ -78,6 +78,18 @@ class RiskManager:
         for r in RiskRule.objects.all():
             val = r.value.get("value") if isinstance(r.value, dict) and "value" in r.value else r.value
             rules[r.key] = val
+
+        # Existing database rules may outlive code defaults. In micro mode,
+        # treat these values as hard ceilings/floors so stale DB settings cannot
+        # silently relax the $10 account's safety profile.
+        from django.conf import settings
+        if getattr(settings, "TRADEFLOW_MICRO_ACCOUNT_MODE", False):
+            rules["max_risk_pct"] = min(float(rules.get("max_risk_pct", 1.0)), 1.0)
+            rules["max_positions"] = min(int(rules.get("max_positions", 1)), 1)
+            rules["daily_loss_limit_pct"] = min(float(rules.get("daily_loss_limit_pct", 2.0)), 2.0)
+            rules["max_position_pct"] = min(float(rules.get("max_position_pct", 10.0)), 10.0)
+            rules["min_rr_ratio"] = max(float(rules.get("min_rr_ratio", 1.5)), 1.5)
+            rules["require_stop_loss"] = True
         return rules
 
     @classmethod
@@ -161,6 +173,12 @@ class RiskManager:
                     "reason": f"Risk violation: Stop-loss ({stop_loss}) must be above current price ({current_price}) for a SELL order.",
                     "suggested_qty": 0.0,
                 }
+
+        if take_profit is not None:
+            if side.lower() == "buy" and take_profit <= current_price:
+                return {"approved": False, "reason": "Risk violation: take-profit must be above current price for a BUY order.", "suggested_qty": 0.0}
+            if side.lower() == "sell" and take_profit >= current_price:
+                return {"approved": False, "reason": "Risk violation: take-profit must be below current price for a SELL order.", "suggested_qty": 0.0}
 
         # 2. Reward-to-Risk Ratio Validation
         rr_ratio = 0.0
