@@ -203,15 +203,14 @@ class MT5Client:
         Retrieves all currently active open positions in the MT5 terminal.
         """
         if not MT5_AVAILABLE:
-            return []
+            raise RuntimeError("MetaTrader5 package is unavailable; open positions cannot be verified.")
         if not self._connected:
-            self.connect()
-        if not self._connected:
-            return []
-
+            connection = self.connect()
+            if not connection.get("success"):
+                raise RuntimeError(f"MT5 is disconnected; open positions cannot be verified: {connection.get('error', 'connection failed')}")
         positions = mt5.positions_get()
         if positions is None:
-            return []
+            raise RuntimeError("MT5 positions_get returned no data; open positions cannot be verified.")
 
         result = []
         for pos in positions:
@@ -357,17 +356,15 @@ class MT5Client:
 
         if stop_loss is not None:
             sl_val = float(stop_loss)
-            if is_buy:
-                request["sl"] = round(sl_val if sl_val < price else (price - (300 * point)), digits)
-            else:
-                request["sl"] = round(sl_val if sl_val > price else (price + (300 * point)), digits)
+            if (is_buy and sl_val >= price) or (not is_buy and sl_val <= price):
+                return {"success": False, "error": "MT5 order rejected: stop-loss is on the wrong side of the executable market price."}
+            request["sl"] = round(sl_val, digits)
 
         if take_profit is not None:
             tp_val = float(take_profit)
-            if is_buy:
-                request["tp"] = round(tp_val if tp_val > price else (price + (600 * point)), digits)
-            else:
-                request["tp"] = round(tp_val if tp_val < price else (price - (600 * point)), digits)
+            if (is_buy and tp_val <= price) or (not is_buy and tp_val >= price):
+                return {"success": False, "error": "MT5 order rejected: take-profit is on the wrong side of the executable market price."}
+            request["tp"] = round(tp_val, digits)
 
         result = mt5.order_send(request)
         if result is None:
