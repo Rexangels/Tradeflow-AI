@@ -8,10 +8,10 @@ from .alpaca_client import get_alpaca_client
 logger = logging.getLogger(__name__)
 
 DEFAULT_RULES = {
-    "max_risk_pct": 2.0,                   # Maximum 2% risk of total equity per trade
-    "max_positions": 5,                    # Maximum 5 concurrent open positions
+    "max_risk_pct": 1.0,                   # Conservative default: maximum 1% risk per trade
+    "max_positions": 1,                    # Conservative default: one open position
     "max_usd_directional_positions": 2,    # Maximum 2 correlated same-direction USD positions
-    "daily_loss_limit_pct": 5.0,           # Stop trading if realized/unrealized loss exceeds 5% today
+    "daily_loss_limit_pct": 2.0,           # Stop trading at 2% combined realized/unrealized daily loss
     "min_rr_ratio": 1.5,                   # Minimum 1.5 reward-to-risk ratio
     "require_stop_loss": True,             # Mandatory stop-loss on every order
     "max_position_pct": 10.0,              # Max single-position notional allocation on unleveraged accounts
@@ -181,16 +181,20 @@ class RiskManager:
         from .order_execution import OrderExecutionService
         try:
             acc = account_data or OrderExecutionService.get_account_overview()
-            equity = float(acc.get("equity") or acc.get("cash") or 500.0)
-            leverage = float(acc.get("leverage") or (500.0 if acc.get("broker") == "mt5" else 1.0))
+            if acc.get("connected") is False:
+                return {"approved": False, "reason": "Risk violation: broker account is disconnected; live equity cannot be verified.", "suggested_qty": 0.0}
+            equity_value = acc.get("equity")
+            if equity_value is None:
+                equity_value = acc.get("cash")
+            if equity_value is None or float(equity_value) <= 0:
+                return {"approved": False, "reason": "Risk violation: valid positive broker equity is unavailable.", "suggested_qty": 0.0}
+            equity = float(equity_value)
+            leverage = float(acc.get("leverage") or 1.0)
             is_mt5 = acc.get("broker") == "mt5" or acc.get("active_broker") == "mt5"
             is_cent = bool(acc.get("isCentAccount", False))
         except Exception as exc:
-            logger.warning(f"Unable to fetch account overview for risk check: {exc}")
-            equity = 500.0
-            leverage = 1.0
-            is_mt5 = False
-            is_cent = False
+            logger.error("Unable to verify broker account equity; rejecting order: %s", exc)
+            return {"approved": False, "reason": "Risk violation: broker account information could not be verified. Order rejected.", "suggested_qty": 0.0}
 
         # 4. Open Positions Count & Correlated USD Exposure Check
         max_usd_dir = int(rules.get("max_usd_directional_positions", 2))
@@ -221,18 +225,22 @@ class RiskManager:
                         ),
                         "suggested_qty": 0.0,
                     }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("Unable to verify open broker positions; rejecting order: %s", exc)
+            return {"approved": False, "reason": "Risk violation: open positions could not be verified. Order rejected.", "suggested_qty": 0.0}
 
-        # 5. Daily Loss Limit Check (Realized + Unrealized Drawdown Circuit Breaker)
+        # 5. Daily loss circuit breaker: realized losses today plus current
+        # negative unrealized P&L. Unknown position data fails closed above.
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         daily_trades = TradeLog.objects.filter(created_at__gte=today_start, realized_pnl__isnull=False)
         daily_realized_loss = sum(t.realized_pnl for t in daily_trades if t.realized_pnl < 0)
+        unrealized_loss = sum(min(0.0, float(p.get("unrealized_pnl") or 0.0)) for p in positions)
+        combined_daily_loss = abs(daily_realized_loss) + abs(unrealized_loss)
         max_daily_loss_usd = (daily_loss_limit_pct / 100.0) * equity
-        if abs(daily_realized_loss) >= max_daily_loss_usd:
+        if combined_daily_loss >= max_daily_loss_usd:
             return {
                 "approved": False,
-                "reason": f"Risk violation: Daily loss circuit breaker triggered. Realized loss today is ${abs(daily_realized_loss):.2f} (limit: ${max_daily_loss_usd:.2f}). Trading halted for the day.",
+                "reason": f"Risk violation: daily loss circuit breaker triggered. Combined realized and unrealized losses are ${combined_daily_loss:.2f} (limit: ${max_daily_loss_usd:.2f}). Trading halted.",
                 "suggested_qty": 0.0,
             }
 
@@ -254,11 +262,16 @@ class RiskManager:
             if risk_per_unit > 0:
                 max_units = max_risk_usd / risk_per_unit
                 if qty_is_lots:
-                    max_lots = max(0.01, round(max_units / lot_unit_multiplier, 2))
+                    # Round DOWN to the broker's 0.01-lot step. Never force a
+                    # minimum lot that would exceed the calculated risk budget.
+                    import math
+                    max_lots = math.floor((max_units / lot_unit_multiplier) * 100.0) / 100.0
+                    if max_lots < 0.01:
+                        return {"approved": False, "reason": "Risk violation: calculated risk budget is below the broker's 0.01-lot minimum; trade rejected.", "suggested_qty": 0.0, "risk_amount_usd": 0.0, "risk_pct": 0.0}
                     suggested_qty = min(qty, max_lots)
                     effective_units = suggested_qty * lot_unit_multiplier
                 else:
-                    suggested_qty = min(qty, round(max_units, 2))
+                    suggested_qty = min(qty, max_units)
                     effective_units = suggested_qty
 
                 risk_amount_usd = round(effective_units * risk_per_unit, 2)
@@ -277,9 +290,15 @@ class RiskManager:
         if stop_loss is None or leverage <= 5.0:
             notional = effective_units * current_price
             max_notional = (max_position_pct / 100.0) * equity * max(1.0, leverage)
-            if notional > max_notional * 1.5 and current_price > 0:
+            if notional > max_notional and current_price > 0:
                 capped_units = max_notional / current_price
-                suggested_qty = round(capped_units / lot_unit_multiplier, 2) if qty_is_lots else round(capped_units, 2)
+                if qty_is_lots:
+                    import math
+                    suggested_qty = math.floor((capped_units / lot_unit_multiplier) * 100.0) / 100.0
+                    if suggested_qty < 0.01:
+                        return {"approved": False, "reason": "Risk violation: broker minimum lot exceeds the permitted position allocation.", "suggested_qty": 0.0}
+                else:
+                    suggested_qty = min(suggested_qty, capped_units)
 
         return {
             "approved": True,
