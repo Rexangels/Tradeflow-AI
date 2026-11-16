@@ -106,7 +106,7 @@ class BacktestApiTests(APITestCase):
             **DEFAULT_AGENT,
             "strategies": [
                 {"id": "trend-following", "name": "Trend Following", "description": "Strategy registry test fixture.", "enabled": True},
-                {"id": "trend-breakout-v1", "name": "Trend Breakout", "description": "", "enabled": True},
+                {"id": "trend-breakout-v1", "name": "Trend Breakout", "description": "Trend breakout registry fixture.", "enabled": True},
             ],
         }
         response = self.client.post(
