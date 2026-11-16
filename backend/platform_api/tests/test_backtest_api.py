@@ -82,7 +82,7 @@ class BacktestApiTests(APITestCase):
     def test_backtest_rejects_unknown_strategy_id_before_saving_a_dataset(self):
         agent = {
             **DEFAULT_AGENT,
-            "strategies": [{"id": "unregistered-strategy", "name": "Unknown", "description": "", "enabled": True}],
+            "strategies": [{"id": "unregistered-strategy", "name": "Unknown", "description": "Unknown strategy fixture.", "enabled": True}],
         }
         response = self.client.post(
             "/api/v1/backtests",
@@ -105,7 +105,7 @@ class BacktestApiTests(APITestCase):
         agent = {
             **DEFAULT_AGENT,
             "strategies": [
-                {"id": "trend-following", "name": "Trend Following", "description": "", "enabled": True},
+                {"id": "trend-following", "name": "Trend Following", "description": "Strategy registry test fixture.", "enabled": True},
                 {"id": "trend-breakout-v1", "name": "Trend Breakout", "description": "", "enabled": True},
             ],
         }
