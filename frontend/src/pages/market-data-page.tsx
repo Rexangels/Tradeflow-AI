@@ -39,6 +39,11 @@ export function MarketDataPage() {
     queryFn: () => api.getMarketDataSnapshots(symbol, timeframe, 5),
     refetchInterval: 60_000,
   });
+  const featuresQuery = useQuery({
+    queryKey: ["market-data-features", symbol, timeframe],
+    queryFn: () => api.getMarketDataFeatures(symbol, timeframe, 500),
+    staleTime: 30_000,
+  });
 
   const chatMutation = useMutation({
     mutationFn: () => api.chat({ message, symbol, timeframe, threadId }),
@@ -54,6 +59,9 @@ export function MarketDataPage() {
   const candles = candlesQuery.data ?? [];
   const candleError = candlesQuery.error ? (candlesQuery.error as Error).message : null;
   const status = marketStatusQuery.data;
+  const latestFeatures = featuresQuery.data?.latest;
+  const formatFeature = (value: number | null, suffix = "") =>
+    value === null ? "Warming up" : `${value.toFixed(2)}${suffix}`;
   const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
   const isSynthetic = candleSource === "synthetic_demo";
   const sourceLabel = candleSource === "synthetic_demo"
@@ -152,6 +160,80 @@ export function MarketDataPage() {
           </p>
         </section>
       )}
+
+      <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Causal Research Features</h3>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Versioned indicator and market-state inputs · no future candles used
+            </p>
+            {featuresQuery.data && (
+              <p className="mt-1 text-[10px] text-slate-500">
+                {featuresQuery.data.symbol} · {featuresQuery.data.timeframe} · {featuresQuery.data.barCount} bars · as of {new Date(featuresQuery.data.asOf).toLocaleString()}
+              </p>
+            )}
+          </div>
+          {featuresQuery.data && (
+            <div className="text-right">
+              <p className={`text-xs font-semibold ${featuresQuery.data.ready ? "text-emerald-300" : "text-amber-300"}`}>
+                {featuresQuery.data.ready ? "Feature set ready" : "NO TRADE · insufficient history"}
+              </p>
+              <p className="mt-1 font-mono text-[10px] text-slate-500">
+                v{featuresQuery.data.featureSetVersion} · {featuresQuery.data.requiredBars} bars required
+              </p>
+            </div>
+          )}
+        </div>
+        {featuresQuery.isLoading ? (
+          <p className="mt-4 text-xs text-slate-500">Calculating historical features…</p>
+        ) : featuresQuery.error ? (
+          <p className="mt-4 text-xs text-amber-300">
+            Feature data unavailable: {(featuresQuery.error as Error).message}
+          </p>
+        ) : latestFeatures ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">RSI 14</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.rsi14)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">ATR 14</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.atr14)}</p>
+                <p className="mt-1 text-[10px] text-slate-500">{formatFeature(latestFeatures.atrPct, "% of price")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">EMA 20 / 50 Spread</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.ema20Vs50Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">EMA 50 / 200 Spread</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.ema50Vs200Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">20-Bar Volatility</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.volatility20Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Bollinger Width 20</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.bollingerWidth20Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Volume Z-Score 20</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.volumeZScore20)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">12-Bar Return</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.return12Pct, "%")}</p>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+              These are research features, not entry signals. A ready feature set only means the minimum lookback is available; it does not mean a strategy has an edge. Spread-cost features are omitted unless verified spread and pip-size inputs are explicitly supplied.
+            </p>
+          </>
+        ) : null}
+      </section>
 
       <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
