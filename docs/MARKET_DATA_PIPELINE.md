@@ -61,6 +61,10 @@ All rolling features are causal and include only the current and prior candles. 
 
 The feature endpoint also returns rule-based regime labels from `platform_api.services.regime_classifier` v1.0.0. API/UI integration and the classifier tests passed CI on code commit `dad0d78807fa17f92eddd3751a874dc83e7436ab` (121 Django tests and green frontend type-check/tests/build). It uses EMA/ATR relationships for trend and range labels and a 90th-percentile volatility comparison against the preceding 100 valid observations (minimum 50). It classifies each bar causally and reports its rule thresholds and reason. `UNCERTAIN` remains an explicit label. Liquidity stays `not_assessed` until reliable instrument-aware spread/depth evidence exists, and the response always sets `executionAuthority=none`. See [MARKET_REGIME_CLASSIFICATION.md](MARKET_REGIME_CLASSIFICATION.md) for the rule contract and evaluation gates. These labels are a research baseline, not validated entry signals.
 
+## Reviewed-label evaluation CLI
+
+`python manage.py evaluate_market_regimes <labels.csv> --output <report.json>` calculates a confusion matrix, accuracy, macro-F1, balanced accuracy and per-class precision/recall/F1 from a human-reviewed CSV. The required header is stored in `docs/regime_labels_template.csv`. The evaluator refuses any row not marked `human_reviewed`, duplicate time keys, unsupported labels, timezone-naive timestamps or mixed feature/classifier versions. The evaluator and its tests passed the backend CI suite on code commit `c79f74d5fcf79bf04e33d17206d1790f04b38e2a` (129 Django tests). No real label dataset is present, so metrics from real market periods remain unavailable.
+
 ## Acceptance tests
 
 - Valid chronological OHLCV data passes.
