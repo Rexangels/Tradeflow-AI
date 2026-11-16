@@ -27,6 +27,7 @@ from .services.market_data import candle_data_source, get_candles, latest_price,
 from .services.market_data_snapshots import create_market_data_snapshot
 from .services.feature_engine import build_feature_series
 from .services.regime_classifier import classify_regime_series
+from .services.strategy_registry import list_strategy_definitions
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -83,6 +84,15 @@ class AgentsView(APIView):
             strategies=payload["strategies"],
         )
         return Response(serialize_agent(agent), status=201)
+
+
+class StrategyCatalogView(APIView):
+    """Read-only catalogue of research strategies and their declared limits."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        return Response(list_strategy_definitions())
 
 
 class AgentDetailView(APIView):
@@ -287,6 +297,7 @@ class BacktestsView(APIView):
                 **result["validation"],
                 "walkForward": result["walkForward"],
                 "modelAnalysis": result["modelAnalysis"],
+                "strategyContract": result.get("strategyContract"),
             },
             equity_curve=result["equityCurve"],
         )
