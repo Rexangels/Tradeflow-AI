@@ -33,6 +33,47 @@ describe("MarketDataPage", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes("/market-data/features")) {
+          return new Response(
+            JSON.stringify({
+              featureSetVersion: "1.0.0",
+              symbol: "EURUSD",
+              timeframe: "1h",
+              source: "mt5",
+              asOf: "2026-11-16T10:00:00+00:00",
+              barCount: 220,
+              requiredBars: 200,
+              warmupBars: 0,
+              ready: true,
+              abstainReason: null,
+              latest: {
+                return1Pct: 0.1,
+                return3Pct: 0.3,
+                return6Pct: 0.6,
+                return12Pct: 1.2,
+                ema20: 1.100,
+                ema50: 1.095,
+                ema200: 1.080,
+                ema20Vs50Pct: 0.46,
+                ema50Vs200Pct: 1.39,
+                closeVsEma200Pct: 1.85,
+                rsi14: 62.5,
+                atr14: 0.0012,
+                atrPct: 0.11,
+                volatility20Pct: 0.08,
+                bollingerWidth20Pct: 0.62,
+                volumeZScore20: 1.25,
+                candleRangePct: 0.13,
+                candleBodyPct: 0.05,
+                closeLocation: 0.7,
+                spreadPips: null,
+                spreadCostPct: null,
+              },
+              series: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
         if (url.includes("/market-data/candles")) {
           return new Response(JSON.stringify(candles), {
             status: 200,
@@ -113,6 +154,11 @@ describe("MarketDataPage", () => {
     );
 
     expect(await screen.findByText("Historical Data Quality")).toBeInTheDocument();
+    expect(await screen.findByText("Causal Research Features")).toBeInTheDocument();
+    expect(await screen.findByText("Feature set ready")).toBeInTheDocument();
+    expect(await screen.findByText("RSI 14")).toBeInTheDocument();
+    expect(await screen.findByText("EMA 50 / 200 Spread")).toBeInTheDocument();
+    expect(screen.getByText(/not entry signals/i)).toBeInTheDocument();
     expect(await screen.findByText("Detected gaps")).toBeInTheDocument();
     expect(await screen.findByText("Saved Research Datasets")).toBeInTheDocument();
     expect(await screen.findByText(/SHA-256 a{16}/)).toBeInTheDocument();
