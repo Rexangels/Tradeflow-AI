@@ -59,6 +59,8 @@ read-only verification for a symbol and timeframe.
 
 See [docs/AUTONOMOUS_TRADING_ROADMAP.md](docs/AUTONOMOUS_TRADING_ROADMAP.md) for the guarded-autonomy architecture, implemented safety changes, $10 paper-account configuration, research gates, and remaining production blockers.
 
+See [docs/TRADEFLOW_IMPLEMENTATION_PLAN.md](docs/TRADEFLOW_IMPLEMENTATION_PLAN.md) for the full staged intelligence roadmap and [docs/MARKET_DATA_PIPELINE.md](docs/MARKET_DATA_PIPELINE.md) for Phase 1 data contracts and acceptance criteria.
+
 For a $10 paper experiment, configure the PAPER_* variables in the backend environment before creating the paper account. Existing paper accounts retain their stored balances; changing PAPER_STARTING_BALANCE only affects newly created accounts. Keep MARKET_DATA_FALLBACK_MODE=strict for research and all broker-connected workflows.
 
 **Do not use a $10 account for live execution yet.** Broker-specific minimum sizes, order-state reconciliation, protective-stop verification, and CSRF/session hardening still require validation. The MT5 adapter now rejects disconnected/fabricated account equity and refuses to upscale a position to meet minimum lot sizes.
