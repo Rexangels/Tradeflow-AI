@@ -897,6 +897,30 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
         except Exception as exc:
             contexts.append(ToolContext(name="market_status", content=f"Market analysis for {target_sym} unavailable: {exc}"))
 
+    # Explicit model questions trigger a bounded research run over validated candles.
+    # This is analysis only: it does not create an order or promote a strategy.
+    model_question = any(
+        keyword in message
+        for keyword in ("model signal", "model analysis", "model prediction", "model forecast", "probability up", "probability down")
+    )
+    if model_question and not backtest_id:
+        try:
+            model_candles = get_candles(target_sym, timeframe, limit=500)
+            model_result = run_backtest(
+                {
+                    "symbol": target_sym,
+                    "timeframe": timeframe,
+                    "agent": DEFAULT_AGENT.copy(),
+                    "settings": {},
+                },
+                model_candles,
+            )
+            model_context = _model_analysis_context(target_sym, model_result.get("modelAnalysis"))
+            if model_context:
+                contexts.append(model_context)
+        except Exception as exc:
+            logger.warning("On-demand model analysis failed for %s %s: %s", target_sym, timeframe, exc)
+
     # Opportunity scanner for general queries about what to trade
     scan_kws = (
         "other pair", "which pair", "what can we trade", "what else", "any setup",
@@ -936,7 +960,7 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
     if backtest_id:
         run = (
             BacktestRun.objects.filter(id=backtest_id, owner=user)
-            .select_related("agent")
+            .select_related("agent", "snapshot")
             .prefetch_related("trades")
             .first()
         )
@@ -944,22 +968,52 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
             backtest_payload = serialize_backtest(run)
             contexts.extend(_saved_backtest_contexts(backtest_payload))
 
+            selected_trade_id = payload.get("tradeId")
+            if selected_trade_id:
+                selected_trade = run.trades.filter(id=selected_trade_id).first()
+                if selected_trade:
+                    paired_trade = (
+                        run.trades.filter(executed_at__gte=selected_trade.executed_at)
+                        .exclude(id=selected_trade.id)
+                        .order_by("executed_at")
+                        .first()
+                    )
+                    trade_side = selected_trade.type.upper()
+                    trade_content = (
+                        f"This {trade_side} happened here because {selected_trade.reason or 'the strategy generated an entry/exit signal at this point in the replay.'} "
+                        f"Recorded fill: {selected_trade.quantity:g} units of {run.symbol} at {selected_trade.price:g} "
+                        f"on {selected_trade.executed_at.isoformat()}."
+                    )
+                    replay_time = payload.get("replayTime")
+                    playback_index = payload.get("playbackIndex")
+                    if replay_time:
+                        trade_content += f" Replay cursor: {replay_time}."
+                    if playback_index is not None:
+                        trade_content += f" Replay candle index: {playback_index}."
+                    if paired_trade:
+                        trade_content += (
+                            f" Paired trade: {paired_trade.type.upper()} at {paired_trade.price:g} "
+                            f"on {paired_trade.executed_at.isoformat()}"
+                        )
+                        if paired_trade.profit is not None:
+                            trade_content += f", recorded P&L {paired_trade.profit:+.2f}"
+                        trade_content += "."
+                    contexts.append(ToolContext(name="selected_backtest_trade", content=trade_content))
+
     return contexts
 
 
 def _generate_reply(thread: ChatThread, user_message: str, contexts: list[ToolContext]) -> str:
-    # Only user/assistant turns go into the prompt history. Tool dumps are
-    # already passed as Live Tool Context below; including them twice makes
-    # Gemini parrot the same numbers back verbatim.
-    history_msgs = (
-        thread.messages.exclude(role="tool").order_by("-created_at")[:6]
-    )
+    history_msgs = thread.messages.exclude(role="tool").order_by("-created_at")[:6]
     history = "\n".join(
-        f"{m.role.upper()}: {m.content[:400]}"
-        for m in reversed(list(history_msgs))
+        f"{message.role.upper()}: {message.content[:400]}"
+        for message in reversed(list(history_msgs))
     )
-    tool_context = "\n".join(f"{context.name}: {context.content}" for context in contexts) or "No tool data needed."
+    tool_context = "\n".join(
+        f"{context.name}: {context.content}" for context in contexts
+    ) or "No tool data needed."
     system_prompt = _system_prompt_for_contexts(contexts)
+    gemini_unavailable = False
 
     if settings.GEMINI_API_KEY and genai is not None:
         try:
@@ -971,7 +1025,6 @@ def _generate_reply(thread: ChatThread, user_message: str, contexts: list[ToolCo
                 f"Live Tool & Market Context:\n{tool_context}\n\n"
                 f"User Request: {user_message}"
             )
-
             preferred_model = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash")
             candidate_models = [
                 preferred_model,
@@ -984,49 +1037,90 @@ def _generate_reply(thread: ChatThread, user_message: str, contexts: list[ToolCo
                 "gemini-3.1-flash-lite",
             ]
             models_to_try = []
-            for m in candidate_models:
-                if m and m not in models_to_try:
-                    models_to_try.append(m)
+            for model_name in candidate_models:
+                if model_name and model_name not in models_to_try:
+                    models_to_try.append(model_name)
 
             for model_name in models_to_try:
                 try:
                     response = client.models.generate_content(model=model_name, contents=prompt)
-                    text = getattr(response, "text", None)
-                    if text and text.strip():
-                        logger.info(f"Generated TradeFlow AI reply using model: {model_name}")
-                        return text.strip()
-                except Exception as model_err:
-                    logger.warning(f"Gemini model {model_name} failed: {model_err}. Falling back to next...")
-
+                    response_text = getattr(response, "text", None)
+                    if response_text and response_text.strip():
+                        logger.info("Generated TradeFlow AI reply using model: %s", model_name)
+                        return response_text.strip()
+                    gemini_unavailable = True
+                except Exception as model_error:
+                    gemini_unavailable = True
+                    logger.warning("Gemini model %s failed: %s. Falling back.", model_name, model_error)
         except Exception as exc:
+            gemini_unavailable = True
             logger.warning("Gemini client initialization failed; using research synthesis.", exc_info=exc)
 
-    return _fallback_reply(contexts, user_message)
+    fallback = _fallback_reply(contexts, user_message)
+    if gemini_unavailable:
+        return (
+            "Gemini is unavailable right now. This response is based on backend tool results.\n\n"
+            + fallback
+        )
+    return fallback
 
 
 def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
-    order_exec = next((c.content for c in contexts if c.name == "order_execution_result"), None)
+    order_exec = next((context.content for context in contexts if context.name == "order_execution_result"), None)
     if order_exec:
         return f"### Order Execution Update\n\n{order_exec}"
-    watch = next((c.content for c in contexts if c.name == "watch_tracker"), None)
+
+    watch = next((context.content for context in contexts if context.name == "watch_tracker"), None)
     if watch:
-        mtf_ctx = next((c.content for c in contexts if c.name == "top_down_institutional_confluence"), None)
+        mtf_ctx = next((context.content for context in contexts if context.name == "top_down_institutional_confluence"), None)
         return (
             f"### Tracking On\n\n{watch}\n\n"
             f"Current state: {(mtf_ctx or 'waiting for alignment')[:400]}\n\n"
-            f"Keep this app open — the AI Signals feed polls every 10s and highlights the flip."
+            "Keep this app open — the AI Signals feed polls every 10s and highlights the flip."
         )
 
-    quote_ctx = next((c.content for c in contexts if c.name == "forex_market_quote"), None)
-    mtf_ctx = next((c.content for c in contexts if c.name == "top_down_institutional_confluence"), None)
-    news_ctx = next((c.content for c in contexts if c.name == "economic_news_shield"), None)
-    session_ctx = next((c.content for c in contexts if c.name == "session_liquidity_clock"), None)
-    broker_ctx = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
+    selected_trade = next((context.content for context in contexts if context.name == "selected_backtest_trade"), None)
+    saved_summary = next((context.content for context in contexts if context.name == "saved_backtest_summary"), None)
+    model_context = next((context.content for context in contexts if context.name == "model_analysis"), None)
+
+    if selected_trade:
+        return (
+            "### Backtest Replay Explanation\n\n"
+            + selected_trade
+            + (f"\n\n{saved_summary}" if saved_summary else "")
+        )
+
+    if saved_summary:
+        return (
+            "### Saved Backtest Review\n\n"
+            + saved_summary
+            + (f"\n\n{model_context}" if model_context else "")
+            + "\n\nThis is historical research, not a live trade instruction. Review out-of-sample performance and execution assumptions before promoting the strategy."
+        )
+
+    if model_context:
+        return (
+            "### Model Signal Review\n\n"
+            + model_context
+            + "\n\nTreat this as a research signal, not a verified trading edge. No order placed."
+        )
+
+    market_status = next((context.content for context in contexts if context.name == "market_status"), None)
+    quote_ctx = next((context.content for context in contexts if context.name == "forex_market_quote"), None)
+    mtf_ctx = next((context.content for context in contexts if context.name == "top_down_institutional_confluence"), None)
+    if market_status and not quote_ctx and not mtf_ctx:
+        return (
+            "### Market Data Unavailable\n\n"
+            "Real market data is currently unavailable. I will not substitute synthetic prices for a trade assessment. "
+            "No actionable signal can be verified and no order was placed."
+        )
+
+    news_ctx = next((context.content for context in contexts if context.name == "economic_news_shield"), None)
+    session_ctx = next((context.content for context in contexts if context.name == "session_liquidity_clock"), None)
+    broker_ctx = next((context.content for context in contexts if context.name == "active_broker_and_account"), None)
 
     if mtf_ctx:
-        # Concise fallback (used only when Gemini is unreachable). Do not echo
-        # the full tool strings — the UI already renders tool data separately.
-        tf_ctx = next((c.content for c in contexts if c.name == "requested_timeframe_view"), None)
+        tf_ctx = next((context.content for context in contexts if context.name == "requested_timeframe_view"), None)
         tf_line = f"\n\n**Asked timeframe:** {tf_ctx[:400]}" if tf_ctx else ""
         return (
             f"### TradeFlow Verdict\n\n"
@@ -1034,14 +1128,12 @@ def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
             f"{tf_line}\n\n"
             f"**Guardrails:** {(news_ctx or 'News Shield Clear')[:160]} | "
             f"{(session_ctx or 'Standard session')[:160]}\n\n"
-            f"Reply **'execute trade'** to route to {broker_ctx or 'MT5 Demo'}."
+            f"Reply **'execute trade'** to route to {broker_ctx or 'the configured broker'}."
         )
 
-    account = next((c.content for c in contexts if c.name == "active_broker_and_account"), None)
-    if account:
-        return f"### Account & Risk Overview\n\n{account}"
-
-    return "I analyzed your request against live market data and risk rules. Let me know which currency pair you'd like to inspect or trade!"
+    if broker_ctx:
+        return f"### Account & Risk Overview\n\n{broker_ctx}"
+    return "I analyzed your request against available backend data and risk rules. No order was placed."
 
 
 def _system_prompt_for_contexts(contexts: list[ToolContext]) -> str:
@@ -1085,16 +1177,69 @@ def _system_prompt_for_contexts(contexts: list[ToolContext]) -> str:
 
 
 
+def _model_analysis_context(symbol: str, model_analysis: Optional[dict[str, Any]]) -> Optional[ToolContext]:
+    if not isinstance(model_analysis, dict) or model_analysis.get("available") is False:
+        return None
+
+    signal = model_analysis.get("signal") or {}
+    performance = model_analysis.get("performance") or {}
+    explanation = model_analysis.get("explanation") or {}
+    action = str(signal.get("action", "hold")).upper()
+    details = [f"action {action}"]
+    probability_up = signal.get("probabilityUpPct")
+    confidence = signal.get("confidencePct")
+    accuracy = performance.get("testAccuracyPct")
+    if probability_up is not None:
+        details.append(f"probability up {float(probability_up):.2f}%")
+    if confidence is not None:
+        details.append(f"confidence {float(confidence):.2f}%")
+    if accuracy is not None:
+        details.append(f"out-of-sample test accuracy {float(accuracy):.2f}%")
+
+    content = f"Model analysis for {symbol}: " + "; ".join(details) + "."
+    if explanation.get("summary"):
+        content += f" {explanation['summary']}"
+    return ToolContext(name="model_analysis", content=content)
+
+
 def _saved_backtest_contexts(backtest: dict[str, Any]) -> list[ToolContext]:
-    metrics = backtest["metrics"]
-    return [
-        ToolContext(
-            name="saved_backtest_summary",
-            content=(
-                f"Saved backtest for {backtest['symbol']} ({backtest['timeframe']}): "
-                f"Return: {metrics['totalReturnPct']:.2f}%, Sharpe: {metrics['sharpeRatio']:.2f}, "
-                f"Drawdown: {metrics['maxDrawdownPct']:.2f}%, Win Rate: {metrics['winRate']:.2f}%, "
-                f"Total Trades: {metrics['totalTrades']}."
-            ),
+    metrics = backtest.get("metrics") or {}
+    symbol = backtest.get("symbol", "unknown symbol")
+    timeframe = backtest.get("timeframe", "unknown timeframe")
+    total_return = float(metrics.get("totalReturnPct", 0.0) or 0.0)
+    sharpe = float(metrics.get("sharpeRatio", 0.0) or 0.0)
+    drawdown = float(metrics.get("maxDrawdownPct", 0.0) or 0.0)
+    win_rate = float(metrics.get("winRate", 0.0) or 0.0)
+    trade_count = int(metrics.get("totalTrades", 0) or 0)
+
+    content = (
+        f"Saved backtest for {symbol} ({timeframe}): "
+        f"Return: {total_return:.2f}%, Sharpe: {sharpe:.2f}, "
+        f"Drawdown: {drawdown:.2f}%, Win Rate: {win_rate:.2f}%, "
+        f"Total Trades: {trade_count}."
+    )
+    benchmark = metrics.get("benchmarkReturnPct")
+    excess = metrics.get("excessReturnPct")
+    if benchmark is not None:
+        content += f" Buy-and-hold benchmark return: {float(benchmark):.2f}%."
+    if excess is not None:
+        excess_value = float(excess)
+        if excess_value < 0:
+            content += f" The strategy lagged by {abs(excess_value):.2f} percentage points versus the benchmark."
+        elif excess_value > 0:
+            content += f" The strategy outperformed the benchmark by {excess_value:.2f} percentage points."
+        else:
+            content += " The strategy matched the benchmark."
+
+    walk_forward = backtest.get("walkForward") or {}
+    if walk_forward.get("available"):
+        content += (
+            f" Walk-forward verdict: {walk_forward.get('verdict', 'unknown')}; "
+            f"benchmark beat rate {float(walk_forward.get('benchmarkBeatRatePct', 0.0) or 0.0):.2f}%."
         )
-    ]
+
+    contexts = [ToolContext(name="saved_backtest_summary", content=content)]
+    model_context = _model_analysis_context(symbol, backtest.get("modelAnalysis"))
+    if model_context:
+        contexts.append(model_context)
+    return contexts
