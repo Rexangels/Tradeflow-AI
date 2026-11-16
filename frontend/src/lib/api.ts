@@ -495,6 +495,7 @@ export interface MarketRegimeResponse {
   reason: string;
   liquidityStatus: "not_assessed";
   executionAuthority: "none";
+  latest: MarketRegimeSeriesRow;
   thresholds: Record<string, number | string>;
   series: MarketRegimeSeriesRow[];
 }
