@@ -455,6 +455,7 @@ export interface MarketFeatureValues {
   volumeZScore20: number | null;
   candleRangePct: number;
   candleBodyPct: number;
+  signedCandleBodyPct: number;
   closeLocation: number | null;
   spreadPips: number | null;
   spreadCostPct: number | null;
