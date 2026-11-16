@@ -71,6 +71,9 @@ The existing Django backend remains the system of record for users, agents, back
 
 **Exit criteria:** invalid or ambiguous data is rejected; synthetic data cannot enter strict research mode; source and timestamps are traceable; provider outages fail clearly; tests cover malformed, stale, duplicate and incomplete data.
 
+
+**Current implementation status:** canonical candle validation, provider/cache validation, forming-bar exclusion for MT5 research, freshness/gap diagnostics, content-addressed `MarketDataSnapshot` persistence, owner-scoped snapshot retrieval, and BacktestRun-to-snapshot linkage are implemented on the feature branch. Remaining Phase 1 gates are provider-session-aware freshness/gap interpretation, React presentation, and automated execution of backend/frontend test suites.
+
 ### Phase 2 — Feature engineering
 Calculate returns, volatility, ATR, moving averages, momentum, volume statistics and spread/cost features. Make every feature causal: a timestamp may use only information available at that time. Version definitions and test against hand-calculated fixtures.
 
