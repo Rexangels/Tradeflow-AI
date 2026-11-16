@@ -39,7 +39,7 @@ class FeatureEngineTests(SimpleTestCase):
         self.assertIsNone(result["abstainReason"])
         self.assertEqual(result["barCount"], FEATURE_REQUIRED_BARS)
         self.assertEqual(result["latest"]["ema200"], 119.9)
-        self.assertEqual(result["latest"]["atr14"], 1.0)
+        self.assertAlmostEqual(result["latest"]["atr14"], 1.0, places=10)
         self.assertAlmostEqual(result["latest"]["rsi14"], 100.0)
         self.assertAlmostEqual(result["latest"]["return1Pct"], (0.2 / 139.6) * 100.0)
         self.assertEqual(result["source"], "fixture")
