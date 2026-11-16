@@ -157,7 +157,8 @@ describe("MarketDataPage", () => {
     expect(await screen.findByText("Historical Data Quality")).toBeInTheDocument();
     expect(await screen.findByText("Causal Research Features")).toBeInTheDocument();
     expect(await screen.findByText("Market Regime Classifier")).toBeInTheDocument();
-    expect(await screen.findByText("UPTREND")).toBeInTheDocument();
+    await screen.findByText("Market Regime Classifier");
+    expect(screen.getAllByText("UPTREND")).toHaveLength(2);
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
     expect(await screen.findByText("None")).toBeInTheDocument();
     expect(screen.getByText(/not trade entries/i)).toBeInTheDocument();
