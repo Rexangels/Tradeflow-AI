@@ -45,7 +45,9 @@ A gap is a diagnostic, not automatically an error: weekends, holidays, exchange 
 
 ## Storage evolution
 
-Keep Django and MarketDataCache for short-lived request caching. For research-grade history, add a separate append-only dataset/snapshot concept instead of treating a cache row as permanent history. A snapshot identifies symbol, timeframe, provider, start/end, candle count, retrieval time, validation report and content hash. Start with existing Django/Postgres infrastructure; do not add a time-series database until volume and query benchmarks justify it.
+Keep Django and MarketDataCache for short-lived request caching. Research-grade history is stored separately in the append-only `MarketDataSnapshot` model. Each snapshot identifies the owner, symbol, timeframe, source, first/last bar, candle count, capture time, validation report, JSON candle payload and SHA-256 content hash. Identical payloads for the same owner/symbol/timeframe are deduplicated; changed data produces a new snapshot. BacktestRun stores an optional foreign key to the exact snapshot used. Read-only endpoints list the operator's snapshots and retrieve a snapshot with its full candle payload.
+
+Start with existing Django/Postgres infrastructure; do not add a time-series database until volume and query benchmarks justify it.
 
 ## Acceptance tests
 
@@ -67,12 +69,17 @@ Implemented on the current feature branch:
 - Invalid provider payloads are rejected and not cached; invalid cached payloads are ignored and refreshed from a provider.
 - MT5 no longer falls back from the last completed candle (position 1) to position 0 when no completed candle is returned.
 - A non-destructive quality-report helper reports approximate freshness and interval gaps, and the read-only market-data status API now returns these diagnostics. Gap estimates are diagnostic only because exchange/session calendars are not yet applied.
+- Added content-addressed `MarketDataSnapshot` persistence with deterministic SHA-256 hashing, UTC bar boundaries, source and validation metadata, and idempotent deduplication.
+- Backtest runs now retain a foreign key to the exact snapshot used; their API responses expose the snapshot ID and hash.
+- Added owner-scoped read-only snapshot list/detail endpoints. Detail returns the exact stored candles; list responses return metadata without the candle payload.
+- Added service and API tests for deduplication, changed payload hashes, invalid data rejection, UTC timestamps and owner isolation.
 - Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, API response fields, and MT5 forming-bar exclusion.
 
 Still outstanding before Phase 1 is complete:
 - Add provider-specific freshness/session-calendar handling and stronger incomplete-window diagnostics.
 - Present the quality diagnostics in the React frontend.
-- Persist reproducible historical dataset snapshots and content hashes (separate from the short-lived cache).
+- Add market-session calendars and strengthen partial-window diagnostics; gap counts currently do not distinguish exchange closures from missing provider bars.
+- Present snapshot identity and quality diagnostics in the React frontend.
 - Run the new tests and the broader Django suite; add provider sandbox verification where available.
 
 The new and existing tests have been written but have not yet been executed in this environment.
