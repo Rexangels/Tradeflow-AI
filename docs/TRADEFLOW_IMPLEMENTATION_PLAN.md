@@ -89,6 +89,9 @@ Begin with transparent rules for trend, range, high volatility, low liquidity an
 ### Phase 4 — Strategy registry
 Implement independently testable trend-following, breakout and mean-reversion candidates. Standardize entry, exit, stop, sizing interface and required market conditions. Strategies cannot call broker execution directly.
 
+
+**Registry foundation implemented; common strategy interface remains:** the authenticated strategy catalogue now declares stable IDs, versions, engines, required features, eligible regimes, minimum history and regime policy for Trend Following, Mean Reversion and Trend Breakout. Backtests resolve this registry, persist the exact strategy contract and reject unknown, duplicate or mixed-engine selections before writing a market-data snapshot. The Agent Builder displays registry metadata and clarifies that choices are for research/backtesting only. Every registered strategy and contract has `executionAuthority=none`. The two legacy strategies still share the legacy engine, and their regime metadata is advisory rather than a hard gate; Trend Breakout uses internal regime rules. Remaining Phase 4 work is a common causal feature/entry/exit/stop/target/sizing interface, separate strategy modules, and enforced feature/readiness contracts. CI for this registry slice is pending.
+
 ### Phase 5 — Backtesting and validation
 Use chronological train/validation/test splits and walk-forward evaluation. Model spread, commission, slippage, financing, latency and realistic fills. Report expectancy, profit factor, drawdown, trade count, exposure, turnover and regime breakdown. Add sensitivity and Monte Carlo analysis and account for strategy-selection bias.
 
