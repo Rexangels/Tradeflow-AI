@@ -28,7 +28,7 @@ The classifier has no execution permission. Regime labels are not buy/sell/hold 
 
 ## Verification status
 
-Classifier version `1.0.0`, API integration and UI passed GitHub Actions on code commit `dad0d78807fa17f92eddd3751a874dc83e7436ab`: 121 Django tests, frontend type-check, all frontend tests and production build passed. This verifies implementation behavior and test fixtures only; it does not establish that the regime rules predict profitable trades or generalize across markets.
+Classifier version `1.0.0`, its API/UI and the offline reviewed-label evaluator passed GitHub Actions on code commit `c79f74d5fcf79bf04e33d17206d1790f04b38e2a`: all 129 Django tests, frontend type-check, all frontend tests and production build passed. This verifies implementation behavior and test fixtures only; it does not establish that the regime rules predict profitable trades or generalize across markets. The human-label evaluator has been tested on synthetic test fixtures only; no real human-reviewed regime dataset has been supplied.
 
 ## Human-label evaluation workflow
 
