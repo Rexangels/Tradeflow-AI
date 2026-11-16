@@ -157,6 +157,7 @@ def classify_regime_series(feature_payload):
         "reason": latest["reason"],
         "liquidityStatus": latest["liquidityStatus"],
         "executionAuthority": "none",
+        "latest": latest,
         "thresholds": {
             "volatilityReferenceBars": VOLATILITY_REFERENCE_BARS,
             "volatilityMinimumReferenceSamples": VOLATILITY_MIN_REFERENCE_SAMPLES,
