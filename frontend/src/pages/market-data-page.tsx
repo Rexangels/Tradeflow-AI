@@ -61,6 +61,7 @@ export function MarketDataPage() {
   const status = marketStatusQuery.data;
   const latestFeatures = featuresQuery.data?.latest;
   const regime = featuresQuery.data?.regime;
+  const latestRegime = regime?.series.at(-1);
   const formatFeature = (value: number | null, suffix = "") =>
     value === null ? "Warming up" : `${value.toFixed(2)}${suffix}`;
   const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
@@ -272,9 +273,9 @@ export function MarketDataPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                 <p className="text-[10px] uppercase tracking-wider text-slate-500">Volatility rank</p>
                 <p className="mt-1 font-mono text-sm text-slate-100">
-                  {regime.series[regime.series.length - 1]?.volatilityPercentileVsHistory == null
+                  {latestRegime?.volatilityPercentileVsHistory == null
                     ? "Not available"
-                    : `${regime.series[regime.series.length - 1].volatilityPercentileVsHistory.toFixed(1)}th percentile`}
+                    : `${latestRegime.volatilityPercentileVsHistory.toFixed(1)}th percentile`}
                 </p>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
