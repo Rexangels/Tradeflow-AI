@@ -9,6 +9,7 @@ from django.utils import timezone
 from .indicators import calculate_bollinger_bands, calculate_ema, calculate_rsi
 from .model_analysis import analyze_model
 from .market_data import SYNTHETIC_SOURCE, candle_data_source
+from .strategy_registry import strategy_contract_for, strategy_engine_for
 
 
 TRADING_PERIODS_PER_YEAR = {
@@ -30,8 +31,7 @@ def _enabled_strategy_ids(agent: dict) -> list[str]:
 
 
 def _uses_trend_breakout(agent: dict) -> bool:
-    ids = _enabled_strategy_ids(agent)
-    return any(i in ("trend-breakout-v1", "trend-breakout") for i in ids)
+    return strategy_engine_for(agent) == "trend_breakout_v1"
 
 
 def run_backtest(payload: dict, candles: list[dict]) -> dict:
@@ -63,7 +63,8 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
     agent = payload["agent"].copy()
     agent["id"] = str(agent.get("id") or uuid4())
 
-    use_trend = _uses_trend_breakout(agent)
+    strategy_contract = strategy_contract_for(agent)
+    use_trend = strategy_engine_for(agent) == "trend_breakout_v1"
     if use_trend:
         result = _simulate_trend_breakout(symbol, timeframe, agent, settings, validated_candles)
         strategy_version = "trend-breakout-v1/1.0.0"
@@ -118,6 +119,7 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
         "isSorted": True,
         "dataSource": data_source,
         "strategyVersion": strategy_version,
+        "strategyContract": strategy_contract,
         "warnings": warnings,
         "diagnostics": diagnostics,
     }
