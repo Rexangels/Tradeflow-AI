@@ -235,6 +235,10 @@ export const api = {
     request<Candle[]>(`/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&forceRefresh=${forceRefresh}`),
   getMarketDataStatus: (symbol: string, timeframe: string) =>
     request<MarketDataStatusResponse>(`/market-data/status?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`),
+  getMarketDataSnapshots: (symbol: string, timeframe: string, limit = 5) =>
+    request<MarketDataSnapshotSummary[]>(`/market-data/snapshots?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`),
+  getMarketDataSnapshot: (snapshotId: string) =>
+    request<MarketDataSnapshotDetail>(`/market-data/snapshots/${encodeURIComponent(snapshotId)}`),
   getBacktests: () => request<BacktestResult[]>("/backtests"),
   runBacktest: (payload: BacktestRequest) =>
     request<BacktestResult>("/backtests", {
@@ -414,6 +418,40 @@ export const api = {
     request<MTFConfluenceResponse>(`/market/mtf-confluence/${encodeURIComponent(symbol)}`),
 };
 
+export interface MarketDataQualityDiagnostics {
+  valid: boolean;
+  count: number;
+  first_time: string | number;
+  last_time: string | number;
+  source: string;
+  timeframe: string;
+  checked_at: string;
+  latest_bar_age_seconds: number;
+  freshness_threshold_seconds: number;
+  freshness: "recent" | "stale";
+  gap_count: number;
+  missing_intervals_estimate: number;
+  gap_policy: string;
+}
+
+export interface MarketDataSnapshotSummary {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  source: string;
+  firstBarAt: string;
+  lastBarAt: string;
+  candleCount: number;
+  capturedAt: string;
+  contentSha256: string;
+  validation: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+export interface MarketDataSnapshotDetail extends MarketDataSnapshotSummary {
+  candles: Candle[];
+}
+
 export interface MarketDataStatusResponse {
   available: boolean;
   symbol: string;
@@ -422,6 +460,7 @@ export interface MarketDataStatusResponse {
   isRealData?: boolean;
   latestBarTime?: string | null;
   checkedAt?: string;
+  quality?: MarketDataQualityDiagnostics | null;
   error?: string;
 }
 
