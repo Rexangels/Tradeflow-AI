@@ -4,6 +4,7 @@ from django.test import override_settings
 from rest_framework.test import APIClient, APITestCase
 
 from platform_api.auth_utils import ensure_admin_user
+from platform_api.models import BacktestRun, MarketDataSnapshot
 from platform_api.defaults import DEFAULT_AGENT
 
 
@@ -58,6 +59,12 @@ class BacktestApiTests(APITestCase):
         self.assertEqual(response.data["validation"]["candlesChecked"], 120)
         self.assertTrue(response.data["validation"]["isSorted"])
         self.assertEqual(response.data["agent"]["name"], DEFAULT_AGENT["name"])
+        self.assertEqual(response.data["strategyContract"]["engine"], "legacy")
+        self.assertEqual(response.data["strategyContract"]["executionAuthority"], "none")
+        self.assertEqual(
+            {strategy["id"] for strategy in response.data["strategyContract"]["strategies"]},
+            {"trend-following", "mean-reversion"},
+        )
         self.assertTrue(response.data["walkForward"]["available"])
         self.assertGreaterEqual(response.data["walkForward"]["windowCount"], 1)
         self.assertTrue(response.data["modelAnalysis"]["available"])
@@ -70,3 +77,51 @@ class BacktestApiTests(APITestCase):
         self.assertIn("benchmarkReturnPct", list_response.data[0]["metrics"])
         self.assertIn("walkForward", list_response.data[0])
         self.assertIn("modelAnalysis", list_response.data[0])
+        self.assertEqual(list_response.data[0]["strategyContract"]["executionAuthority"], "none")
+    
+    def test_backtest_rejects_unknown_strategy_id_before_saving_a_dataset(self):
+        agent = {
+            **DEFAULT_AGENT,
+            "strategies": [{"id": "unregistered-strategy", "name": "Unknown", "description": "", "enabled": True}],
+        }
+        response = self.client.post(
+            "/api/v1/backtests",
+            {
+                "symbol": "BTCUSDT",
+                "timeframe": "1h",
+                "candles": make_candles(),
+                "agent": agent,
+                "settings": {},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"][0], "Unregistered strategy id: unregistered-strategy.")
+        self.assertEqual(BacktestRun.objects.count(), 0)
+        self.assertEqual(MarketDataSnapshot.objects.count(), 0)
+
+    def test_backtest_rejects_mixed_strategy_engines(self):
+        agent = {
+            **DEFAULT_AGENT,
+            "strategies": [
+                {"id": "trend-following", "name": "Trend Following", "description": "", "enabled": True},
+                {"id": "trend-breakout-v1", "name": "Trend Breakout", "description": "", "enabled": True},
+            ],
+        }
+        response = self.client.post(
+            "/api/v1/backtests",
+            {
+                "symbol": "BTCUSDT",
+                "timeframe": "1h",
+                "candles": make_candles(),
+                "agent": agent,
+                "settings": {},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("different backtest engines", str(response.data))
+        self.assertEqual(BacktestRun.objects.count(), 0)
+        self.assertEqual(MarketDataSnapshot.objects.count(), 0)
