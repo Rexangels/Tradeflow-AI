@@ -51,7 +51,7 @@ Start with existing Django/Postgres infrastructure; do not add a time-series dat
 
 ## Causal feature layer
 
-The first versioned research feature engine is `platform_api.services.feature_engine` (`FEATURE_SET_VERSION=1.0.0`). It is pure Python and provider-independent: callers pass canonical, validated candles; it does not access the database, network, broker or order-execution layer.
+The first versioned research feature engine is `platform_api.services.feature_engine` (`FEATURE_SET_VERSION=1.0.0`). It is pure Python and provider-independent: callers pass canonical, validated candles; it does not access the database, network, broker or order-execution layer. The implementation and API/UI integration passed the CI workflow on code commit `5a89338b32cf0df7ae3c78c5c0100873a6dd2498`, including all 114 Django tests and the frontend type-check, tests and production build.
 
 For each candle, the engine computes close-to-close returns over 1/3/6/12 bars; SMA-seeded EMA20/50/200; Wilder RSI14 and ATR14; ATR as a percentage of close; population standard deviation of the trailing 20 one-bar percentage returns; 20-bar Bollinger width; trailing-20 volume z-score; candle range/body and close location. An optional spread cost is calculated only when both a quoted spread and pip size are explicitly supplied; otherwise the cost field is null.
 
