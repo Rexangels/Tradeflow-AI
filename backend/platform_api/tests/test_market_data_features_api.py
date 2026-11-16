@@ -49,6 +49,9 @@ class MarketDataFeaturesApiTests(APITestCase):
         self.assertEqual(response.data["barCount"], 220)
         self.assertEqual(len(response.data["series"]), 220)
         self.assertAlmostEqual(response.data["latest"]["rsi14"], 100.0)
+        self.assertEqual(response.data["regime"]["regime"], "UPTREND")
+        self.assertEqual(response.data["regime"]["executionAuthority"], "none")
+        self.assertEqual(response.data["regime"]["liquidityStatus"], "not_assessed")
         mock_get_candles.assert_called_once_with(
             "EUR/USD",
             "1h",
