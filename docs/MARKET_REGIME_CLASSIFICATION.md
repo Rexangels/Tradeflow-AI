@@ -26,6 +26,10 @@ Liquidity is deliberately reported as `not_assessed`. Raw volume is not comparab
 
 The classifier has no execution permission. Regime labels are not buy/sell/hold recommendations and do not constitute a validated trading edge. A future Opportunity Scoring layer must combine strategy evidence, transaction costs, uncertainty and independent Risk Guardian checks. Until that layer exists, an `UNCERTAIN` classification is an explicit abstention; a clear trend or range still does not authorize a trade.
 
+## Verification status
+
+Classifier version `1.0.0`, API integration and UI passed GitHub Actions on code commit `dad0d78807fa17f92eddd3751a874dc83e7436ab`: 121 Django tests, frontend type-check, all frontend tests and production build passed. This verifies implementation behavior and test fixtures only; it does not establish that the regime rules predict profitable trades or generalize across markets.
+
 ## Validation still required
 
 Before regime labels are used to gate strategy candidates, TradeFlow needs a time-aligned, independently reviewed labelled dataset, inter-annotator agreement where labels are subjective, per-class precision/recall, confusion matrices, stability tests across symbols/timeframes/providers, and out-of-sample/walk-forward evaluation. Threshold changes require a classifier version change and re-evaluation. No ML classifier should replace this baseline until its performance and calibration are shown to improve out of sample.
