@@ -59,7 +59,7 @@ All rolling features are causal and include only the current and prior candles. 
 
 ## Market regime classification
 
-The feature endpoint also returns rule-based regime labels from `platform_api.services.regime_classifier` v1.0.0. It uses EMA/ATR relationships for trend and range labels and a 90th-percentile volatility comparison against the preceding 100 valid observations (minimum 50). It classifies each bar causally and reports its rule thresholds and reason. `UNCERTAIN` remains an explicit label. Liquidity stays `not_assessed` until reliable instrument-aware spread/depth evidence exists, and the response always sets `executionAuthority=none`. See [MARKET_REGIME_CLASSIFICATION.md](MARKET_REGIME_CLASSIFICATION.md) for the rule contract and evaluation gates. These labels are a research baseline, not validated entry signals.
+The feature endpoint also returns rule-based regime labels from `platform_api.services.regime_classifier` v1.0.0. API/UI integration and the classifier tests passed CI on code commit `dad0d78807fa17f92eddd3751a874dc83e7436ab` (121 Django tests and green frontend type-check/tests/build). It uses EMA/ATR relationships for trend and range labels and a 90th-percentile volatility comparison against the preceding 100 valid observations (minimum 50). It classifies each bar causally and reports its rule thresholds and reason. `UNCERTAIN` remains an explicit label. Liquidity stays `not_assessed` until reliable instrument-aware spread/depth evidence exists, and the response always sets `executionAuthority=none`. See [MARKET_REGIME_CLASSIFICATION.md](MARKET_REGIME_CLASSIFICATION.md) for the rule contract and evaluation gates. These labels are a research baseline, not validated entry signals.
 
 ## Acceptance tests
 
