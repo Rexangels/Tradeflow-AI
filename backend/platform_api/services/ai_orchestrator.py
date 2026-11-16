@@ -992,7 +992,7 @@ def _collect_contexts(user, payload: dict[str, Any], thread: Optional[ChatThread
                         trade_content += f" Replay candle index: {playback_index}."
                     if paired_trade:
                         trade_content += (
-                            f" Paired trade: {paired_trade.type.upper()} at {paired_trade.price:g} "
+                            f" paired trade: {paired_trade.type.upper()} at {paired_trade.price:g} "
                             f"on {paired_trade.executed_at.isoformat()}"
                         )
                         if paired_trade.profit is not None:
@@ -1112,7 +1112,7 @@ def _fallback_reply(contexts: list[ToolContext], user_message: str) -> str:
         return (
             "### Market Data Unavailable\n\n"
             "Real market data is currently unavailable. I will not substitute synthetic prices for a trade assessment. "
-            "No actionable signal can be verified and no order was placed."
+            "No actionable signal can be verified and no order was placed. This response uses backend tool results only."
         )
 
     news_ctx = next((context.content for context in contexts if context.name == "economic_news_shield"), None)
@@ -1196,7 +1196,7 @@ def _model_analysis_context(symbol: str, model_analysis: Optional[dict[str, Any]
     if accuracy is not None:
         details.append(f"out-of-sample test accuracy {float(accuracy):.2f}%")
 
-    content = f"Model analysis for {symbol}: " + "; ".join(details) + "."
+    content = f"Model analysis for {symbol}: " + "; ".join(details) + ". Short-horizon forecast. "
     if explanation.get("summary"):
         content += f" {explanation['summary']}"
     return ToolContext(name="model_analysis", content=content)
