@@ -22,6 +22,11 @@ function emptyAgent(): Omit<AgentConfig, "id" | "createdAt" | "updatedAt"> {
 
 export function AgentsPage() {
   const agentsQuery = useQuery({ queryKey: ["agents"], queryFn: api.getAgents });
+  const strategyCatalogQuery = useQuery({
+    queryKey: ["strategy-catalog"],
+    queryFn: api.getStrategyCatalog,
+    staleTime: 5 * 60 * 1000,
+  });
   const { selectedAgent, setSelectedAgent } = useWorkspaceStore();
   const [form, setForm] = useState<Omit<AgentConfig, "id" | "createdAt" | "updatedAt">>(emptyAgent());
 
@@ -40,6 +45,28 @@ export function AgentsPage() {
       setForm(rest);
     }
   }, [selectedAgent]);
+
+  useEffect(() => {
+    const catalogue = strategyCatalogQuery.data;
+    if (!catalogue?.length) return;
+
+    setForm((current) => {
+      const existingIds = new Set(current.strategies.map((strategy) => strategy.id));
+      const missingStrategies = catalogue
+        .filter((definition) => !existingIds.has(definition.strategy_id))
+        .map((definition) => ({
+          id: definition.strategy_id,
+          name: definition.name,
+          description: definition.description,
+          enabled: false,
+        }));
+      if (!missingStrategies.length) return current;
+      return {
+        ...current,
+        strategies: [...current.strategies, ...missingStrategies],
+      };
+    });
+  }, [strategyCatalogQuery.data, selectedAgent?.id]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -129,20 +156,37 @@ export function AgentsPage() {
         <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
           <p className="text-sm text-slate-400">Enabled strategies</p>
           <div className="mt-4 space-y-3">
-            {form.strategies.map((strategy: Strategy) => (
-              <button key={strategy.id} type="button" onClick={() => toggleStrategy(strategy.id)} className="flex w-full items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-left">
-                <div>
-                  <p>{strategy.name}</p>
-                  <p className="text-sm text-slate-500">{strategy.description}</p>
-                </div>
-                <span className={strategy.enabled ? "text-emerald-300" : "text-slate-500"}>{strategy.enabled ? "On" : "Off"}</span>
-              </button>
-            ))}
+            {form.strategies.map((strategy: Strategy) => {
+              const definition = strategyCatalogQuery.data?.find(
+                (item) => item.strategy_id === strategy.id,
+              );
+              return (
+                <button key={strategy.id} type="button" onClick={() => toggleStrategy(strategy.id)} className="flex w-full items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-left">
+                  <div>
+                    <p>{strategy.name}</p>
+                    <p className="text-sm text-slate-500">{definition?.description ?? strategy.description}</p>
+                    {definition && (
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        v{definition.version} · {definition.engine} engine · {definition.minimum_bars} minimum bars · regimes: {definition.eligible_regimes.join(", ")}
+                      </p>
+                    )}
+                    <p className="mt-1 text-[10px] text-amber-300">
+                      {definition?.regime_policy === "advisory_only"
+                        ? "Regime is advisory only; no automatic regime gate."
+                        : definition?.regime_policy === "strategy_internal"
+                          ? "Uses the strategy's internal regime rules."
+                          : "Research only · no broker execution authority."}
+                    </p>
+                  </div>
+                  <span className={strategy.enabled ? "text-emerald-300" : "text-slate-500"}>{strategy.enabled ? "On" : "Off"}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
         <div className="mt-6 flex items-center justify-between rounded-3xl border border-slate-800 bg-cyan-500/10 p-4">
-          <p className="text-sm text-cyan-100">{activeStrategies} strategies enabled for execution.</p>
+          <p className="text-sm text-cyan-100">{activeStrategies} strategies selected for research/backtesting. Strategy definitions have no broker execution authority.</p>
           <button type="button" onClick={() => saveMutation.mutate()} className="rounded-2xl bg-cyan-300 px-4 py-3 font-semibold text-slate-950">
             {saveMutation.isPending ? "Saving..." : selectedAgent ? "Update agent" : "Create agent"}
           </button>
