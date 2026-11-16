@@ -1,13 +1,11 @@
 import sys
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from platform_api.models import MarketDataCache
 from platform_api.services import market_data
-from platform_api.services.market_data_quality import MarketDataQualityError
 
 
 def make_candle(timestamp, **overrides):
