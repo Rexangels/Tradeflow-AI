@@ -76,9 +76,13 @@ def classify_regime_series(feature_payload):
         features = row["features"]
         trend_bias, trend_reason = _trend_bias(features)
 
+        required_fields = (
+            "ema20", "ema50", "ema200", "atr14", "atrPct",
+            "return12Pct", "closeVsEma200Pct", "volatility20Pct",
+        )
         is_feature_ready = (
             index + 1 >= required_bars
-            and trend_bias != "UNCERTAIN"
+            and all(_is_finite_number(features.get(field)) for field in required_fields)
         )
         history_start = max(0, index - VOLATILITY_REFERENCE_BARS)
         volatility_history = [
