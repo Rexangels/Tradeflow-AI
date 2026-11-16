@@ -57,14 +57,14 @@ class PaperTradingServiceTests(TestCase):
 
         with patch("platform_api.services.paper_trading.latest_price", side_effect=market_price):
             first = place_order(
-            self.user,
-            {
-                "symbol": "SOLUSDT",
-                "side": "buy",
-                "notional": 200,
-                "timeframe": "1h",
-            },
-        )
+                self.user,
+                {
+                    "symbol": "SOLUSDT",
+                    "side": "buy",
+                    "notional": 200,
+                    "timeframe": "1h",
+                },
+            )
             second = place_order(
                 self.user,
                 {
