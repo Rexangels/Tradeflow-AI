@@ -221,6 +221,7 @@ export const api = {
       method: "DELETE",
     }),
   getAgents: () => request<AgentConfig[]>("/agents"),
+  getStrategyCatalog: () => request<StrategyRegistryItem[]>("/strategies/catalog"),
   createAgent: (payload: Omit<AgentConfig, "id" | "createdAt" | "updatedAt">) =>
     request<AgentConfig>("/agents", {
       method: "POST",
@@ -498,6 +499,21 @@ export interface MarketRegimeResponse {
   latest: MarketRegimeSeriesRow;
   thresholds: Record<string, number | string>;
   series: MarketRegimeSeriesRow[];
+}
+
+export interface StrategyRegistryItem {
+  strategy_id: string;
+  name: string;
+  version: string;
+  description: string;
+  engine: string;
+  required_features: string[];
+  eligible_regimes: string[];
+  minimum_bars: number;
+  regime_policy: string;
+  implementation_status: string;
+  execution_authority: "none";
+  aliases: string[];
 }
 
 export interface MarketDataFeatureResponse {
