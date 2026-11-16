@@ -64,7 +64,7 @@ def run_backtest(payload: dict, candles: list[dict]) -> dict:
     agent["id"] = str(agent.get("id") or uuid4())
 
     strategy_contract = strategy_contract_for(agent)
-    use_trend = strategy_engine_for(agent) == "trend_breakout_v1"
+    use_trend = strategy_contract["engine"] == "trend_breakout_v1"
     if use_trend:
         result = _simulate_trend_breakout(symbol, timeframe, agent, settings, validated_candles)
         strategy_version = "trend-breakout-v1/1.0.0"
