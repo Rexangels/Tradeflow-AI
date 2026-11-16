@@ -31,6 +31,22 @@ class MarketDataQuerySerializer(serializers.Serializer):
     forceRefresh = serializers.BooleanField(default=False)
 
 
+class MarketDataFeaturesQuerySerializer(serializers.Serializer):
+    symbol = serializers.CharField(min_length=3)
+    timeframe = serializers.ChoiceField(choices=TIMEFRAME_CHOICES)
+    limit = serializers.IntegerField(min_value=50, max_value=1000, default=500)
+    forceRefresh = serializers.BooleanField(default=False)
+    spreadPips = serializers.FloatField(required=False, min_value=0, max_value=100)
+    pipSize = serializers.FloatField(required=False, min_value=0.00000001)
+
+    def validate(self, attrs):
+        if ("spreadPips" in attrs) != ("pipSize" in attrs):
+            raise serializers.ValidationError(
+                "spreadPips and pipSize must be supplied together."
+            )
+        return attrs
+
+
 class BacktestSettingsSerializer(serializers.Serializer):
     startingBalance = serializers.FloatField(min_value=1, default=10000)
     feeRate = serializers.FloatField(min_value=0, max_value=0.02, default=0.001)
