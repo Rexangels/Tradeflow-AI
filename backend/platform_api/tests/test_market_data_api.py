@@ -35,8 +35,16 @@ class MarketDataApiTests(APITestCase):
     @patch("platform_api.views.get_candles")
     def test_market_data_status_reports_the_verified_provider(self, mock_get_candles):
         mock_get_candles.return_value = [
-            {"time": "2026-10-10T10:00:00+00:00", "source": "mt5"},
-            {"time": "2026-10-10T11:00:00+00:00", "source": "mt5"},
+            {
+                "time": "2026-10-10T10:00:00+00:00",
+                "open": 1.1000, "high": 1.1100, "low": 1.0900, "close": 1.1050,
+                "volume": 100, "source": "mt5",
+            },
+            {
+                "time": "2026-10-10T11:00:00+00:00",
+                "open": 1.1050, "high": 1.1200, "low": 1.1000, "close": 1.1150,
+                "volume": 120, "source": "mt5",
+            },
         ]
 
         response = self.client.get("/api/v1/market-data/status?symbol=EUR/USD&timeframe=1h")
