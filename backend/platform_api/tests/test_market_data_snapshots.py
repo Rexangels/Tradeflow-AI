@@ -1,6 +1,4 @@
 from datetime import datetime, timezone
-from unittest.mock import patch
-
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -86,6 +84,13 @@ class MarketDataSnapshotServiceTests(TestCase):
         snapshot = create_market_data_snapshot(self.owner, "EURUSD", "1h", make_candles())
         self.assertEqual(snapshot.first_bar_at, datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
         self.assertEqual(snapshot.last_bar_at, datetime(2026, 1, 1, 11, 0, tzinfo=timezone.utc))
+
+    def test_existing_snapshot_cannot_be_updated(self):
+        snapshot = create_market_data_snapshot(self.owner, "EURUSD", "1h", make_candles())
+        snapshot.metadata = {"tampered": True}
+
+        with self.assertRaisesRegex(ValueError, "append-only"):
+            snapshot.save()
 
 
 class MarketDataSnapshotApiTests(TestCase):
