@@ -38,6 +38,7 @@ from .views import (
     PaperTradingOrdersView,
     PaperTradingSessionView,
     SettingsView,
+    StrategyCatalogView,
 )
 
 urlpatterns = [
@@ -45,6 +46,7 @@ urlpatterns = [
     path("health", HealthView.as_view()),
     path("admin/session", AdminSessionView.as_view()),
     path("agents", AgentsView.as_view()),
+    path("strategies/catalog", StrategyCatalogView.as_view()),
     path("agents/<uuid:agent_id>", AgentDetailView.as_view()),
     path("market-data/candles", MarketDataCandlesView.as_view()),
     path("market-data/status", MarketDataStatusView.as_view()),
