@@ -97,7 +97,7 @@ class BacktestApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["detail"][0], "Unregistered strategy id: unregistered-strategy.")
+        self.assertEqual(response.data["detail"], "Unregistered strategy id: unregistered-strategy.")
         self.assertEqual(BacktestRun.objects.count(), 0)
         self.assertEqual(MarketDataSnapshot.objects.count(), 0)
 
