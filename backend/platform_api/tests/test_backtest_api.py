@@ -59,11 +59,11 @@ class BacktestApiTests(APITestCase):
         self.assertEqual(response.data["validation"]["candlesChecked"], 120)
         self.assertTrue(response.data["validation"]["isSorted"])
         self.assertEqual(response.data["agent"]["name"], DEFAULT_AGENT["name"])
-        self.assertEqual(response.data["strategyContract"]["engine"], "legacy")
+        self.assertEqual(response.data["strategyContract"]["engine"], "trend_breakout_v1")
         self.assertEqual(response.data["strategyContract"]["executionAuthority"], "none")
         self.assertEqual(
             {strategy["id"] for strategy in response.data["strategyContract"]["strategies"]},
-            {"trend-following", "mean-reversion"},
+            {"trend-breakout-v1"},
         )
         self.assertTrue(response.data["walkForward"]["available"])
         self.assertGreaterEqual(response.data["walkForward"]["windowCount"], 1)
