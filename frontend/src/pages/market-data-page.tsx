@@ -60,6 +60,7 @@ export function MarketDataPage() {
   const candleError = candlesQuery.error ? (candlesQuery.error as Error).message : null;
   const status = marketStatusQuery.data;
   const latestFeatures = featuresQuery.data?.latest;
+  const regime = featuresQuery.data?.regime;
   const formatFeature = (value: number | null, suffix = "") =>
     value === null ? "Warming up" : `${value.toFixed(2)}${suffix}`;
   const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
@@ -233,6 +234,65 @@ export function MarketDataPage() {
             </p>
           </>
         ) : null}
+      </section>
+
+      <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Market Regime Classifier</h3>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Transparent historical rules · classifier v{regime?.classifierVersion ?? "—"}
+            </p>
+          </div>
+          {regime && (
+            <div className="text-right">
+              <p className={`text-sm font-semibold ${
+                regime.regime === "UPTREND" || regime.regime === "DOWNTREND"
+                  ? "text-cyan-300"
+                  : regime.regime === "HIGH_VOLATILITY"
+                    ? "text-amber-300"
+                    : regime.regime === "RANGE"
+                      ? "text-slate-200"
+                      : "text-amber-300"
+              }`}>
+                {regime.regime === "UNCERTAIN" ? "UNCERTAIN · NO TRADE" : regime.regime.replaceAll("_", " ")}
+              </p>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Trend structure: {regime.trendBias.replaceAll("_", " ")}
+              </p>
+            </div>
+          )}
+        </div>
+        {featuresQuery.isLoading ? (
+          <p className="mt-3 text-xs text-slate-500">Classifying market conditions…</p>
+        ) : regime ? (
+          <>
+            <p className="mt-3 text-xs leading-relaxed text-slate-300">{regime.reason}</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Volatility rank</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">
+                  {regime.series[regime.series.length - 1]?.volatilityPercentileVsHistory == null
+                    ? "Not available"
+                    : `${regime.series[regime.series.length - 1].volatilityPercentileVsHistory.toFixed(1)}th percentile`}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Liquidity</p>
+                <p className="mt-1 text-sm text-slate-100">Not assessed</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Execution authority</p>
+                <p className="mt-1 text-sm text-slate-100">None</p>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+              Regime labels describe historical conditions; they are not trade entries. High-volatility labels compare current volatility with the preceding 100 bars. Liquidity remains unassessed until reliable spread and market-depth inputs are available.
+            </p>
+          </>
+        ) : (
+          <p className="mt-3 text-xs text-amber-300">Regime classification is unavailable.</p>
+        )}
       </section>
 
       <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
