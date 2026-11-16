@@ -261,10 +261,26 @@ export const backtestModelAnalysisSchema = z.object({
 });
 export type BacktestModelAnalysis = z.infer<typeof backtestModelAnalysisSchema>;
 
+export const marketDataSnapshotSummarySchema = z.object({
+  id: z.string(),
+  symbol: z.string(),
+  timeframe: timeframeSchema,
+  source: z.string(),
+  firstBarAt: z.string(),
+  lastBarAt: z.string(),
+  candleCount: z.number().int(),
+  capturedAt: z.string(),
+  contentSha256: z.string().length(64),
+  validation: z.record(z.string(), z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
+});
+export type MarketDataSnapshotSummary = z.infer<typeof marketDataSnapshotSummarySchema>;
+
 export const backtestResultSchema = z.object({
   id: z.string(),
   symbol: z.string(),
   timeframe: timeframeSchema,
+  dataSnapshot: marketDataSnapshotSummarySchema.nullable().optional(),
   agent: agentConfigSchema,
   settings: backtestSettingsSchema,
   metrics: backtestMetricsSchema,
