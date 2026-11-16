@@ -19,11 +19,16 @@ class AiChatApiTests(APITestCase):
         self.client = APIClient()
         self.client.force_login(self.user)
 
+    @override_settings(MARKET_DATA_FALLBACK_MODE="strict")
     @patch(
         "platform_api.services.ai_orchestrator.get_candles",
-        side_effect=ValueError("Unable to load Binance market data for BTCUSDT on 1h."),
+        side_effect=ValueError("Real market data is currently unavailable."),
     )
-    def test_chat_returns_graceful_reply_when_market_data_is_unavailable(self, _mock_get_candles):
+    @patch(
+        "platform_api.services.ai_orchestrator.get_forex_quote",
+        side_effect=ValueError("Real market data is currently unavailable."),
+    )
+    def test_chat_returns_graceful_reply_when_market_data_is_unavailable(self, _mock_get_forex_quote, _mock_get_candles):
         response = self.client.post(
             "/api/v1/ai/chat",
             {
