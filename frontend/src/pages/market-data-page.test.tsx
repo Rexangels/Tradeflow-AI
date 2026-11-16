@@ -46,6 +46,50 @@ describe("MarketDataPage", () => {
               warmupBars: 0,
               ready: true,
               abstainReason: null,
+              featureDefinitions: { causality: "No future candles used." },
+              regime: {
+                classifierVersion: "1.0.0",
+                featureSetVersion: "1.0.0",
+                symbol: "EURUSD",
+                timeframe: "1h",
+                asOf: "2026-11-16T10:00:00+00:00",
+                barCount: 220,
+                ready: true,
+                regime: "UPTREND",
+                trendBias: "UPTREND",
+                reason: "EMA20 > EMA50 > EMA200, price is above EMA200, and the 12-bar return is positive.",
+                liquidityStatus: "not_assessed",
+                executionAuthority: "none",
+                latest: {
+                  index: 219,
+                  time: "2026-11-16T10:00:00+00:00",
+                  regime: "UPTREND",
+                  trendBias: "UPTREND",
+                  classificationReady: true,
+                  reason: "EMA structure is aligned.",
+                  volatility20Pct: 0.08,
+                  highVolatilityThreshold: 0.05,
+                  volatilityPercentileVsHistory: 94,
+                  volatilityReferenceSamples: 100,
+                  liquidityStatus: "not_assessed",
+                  executionAuthority: "none",
+                },
+                thresholds: { volatilityReferenceBars: 100 },
+                series: [{
+                  index: 219,
+                  time: "2026-11-16T10:00:00+00:00",
+                  regime: "UPTREND",
+                  trendBias: "UPTREND",
+                  classificationReady: true,
+                  reason: "EMA structure is aligned.",
+                  volatility20Pct: 0.08,
+                  highVolatilityThreshold: 0.05,
+                  volatilityPercentileVsHistory: 94,
+                  volatilityReferenceSamples: 100,
+                  liquidityStatus: "not_assessed",
+                  executionAuthority: "none",
+                }],
+              },
               latest: {
                 return1Pct: 0.1,
                 return3Pct: 0.3,
@@ -157,8 +201,7 @@ describe("MarketDataPage", () => {
     expect(await screen.findByText("Historical Data Quality")).toBeInTheDocument();
     expect(await screen.findByText("Causal Research Features")).toBeInTheDocument();
     expect(await screen.findByText("Market Regime Classifier")).toBeInTheDocument();
-    await screen.findByText("Market Regime Classifier");
-    expect(screen.getAllByText("UPTREND")).toHaveLength(2);
+    expect(await screen.findByText("UPTREND")).toBeInTheDocument();
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
     expect(await screen.findByText("None")).toBeInTheDocument();
     expect(screen.getByText(/not trade entries/i)).toBeInTheDocument();
