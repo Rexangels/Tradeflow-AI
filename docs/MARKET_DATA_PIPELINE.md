@@ -59,6 +59,20 @@ Keep Django and MarketDataCache for short-lived request caching. For research-gr
 - Synthetic data is explicitly labelled and blocked in strict mode.
 - Provider outage returns an explicit unavailable result, not invented prices.
 
-## Initial implementation note
+## Implementation progress
 
-The first code slice adds a reusable validation contract and unit tests. It is not yet wired into the provider/cache path; integration and provider-specific tests remain required before Phase 1 is complete.
+Implemented on the current feature branch:
+- Reusable canonical OHLCV validator and focused unit tests.
+- Validation before provider data is cached and validation before cached payloads are reused.
+- Invalid provider payloads are rejected and not cached; invalid cached payloads are ignored and refreshed from a provider.
+- MT5 no longer falls back from the last completed candle (position 1) to position 0 when no completed candle is returned.
+- A non-destructive quality-report helper reports approximate freshness and interval gaps. Gap estimates are diagnostic only because exchange/session calendars are not yet applied.
+- Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, and MT5 forming-bar exclusion.
+
+Still outstanding before Phase 1 is complete:
+- Expose quality diagnostics through the market-data status/API response and frontend.
+- Add provider-specific freshness/session-calendar handling and stronger incomplete-window diagnostics.
+- Persist reproducible historical dataset snapshots and content hashes (separate from the short-lived cache).
+- Run the new tests and the broader Django suite; add provider sandbox verification where available.
+
+The new and existing tests have been written but have not yet been executed in this environment.
