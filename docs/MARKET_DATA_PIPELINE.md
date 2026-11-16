@@ -66,12 +66,12 @@ Implemented on the current feature branch:
 - Validation before provider data is cached and validation before cached payloads are reused.
 - Invalid provider payloads are rejected and not cached; invalid cached payloads are ignored and refreshed from a provider.
 - MT5 no longer falls back from the last completed candle (position 1) to position 0 when no completed candle is returned.
-- A non-destructive quality-report helper reports approximate freshness and interval gaps. Gap estimates are diagnostic only because exchange/session calendars are not yet applied.
-- Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, and MT5 forming-bar exclusion.
+- A non-destructive quality-report helper reports approximate freshness and interval gaps, and the read-only market-data status API now returns these diagnostics. Gap estimates are diagnostic only because exchange/session calendars are not yet applied.
+- Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, API response fields, and MT5 forming-bar exclusion.
 
 Still outstanding before Phase 1 is complete:
-- Expose quality diagnostics through the market-data status/API response and frontend.
 - Add provider-specific freshness/session-calendar handling and stronger incomplete-window diagnostics.
+- Present the quality diagnostics in the React frontend.
 - Persist reproducible historical dataset snapshots and content hashes (separate from the short-lived cache).
 - Run the new tests and the broader Django suite; add provider sandbox verification where available.
 
