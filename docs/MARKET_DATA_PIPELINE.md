@@ -49,6 +49,14 @@ Keep Django and MarketDataCache for short-lived request caching. Research-grade 
 
 Start with existing Django/Postgres infrastructure; do not add a time-series database until volume and query benchmarks justify it.
 
+## Causal feature layer
+
+The first versioned research feature engine is `platform_api.services.feature_engine` (`FEATURE_SET_VERSION=1.0.0`). It is pure Python and provider-independent: callers pass canonical, validated candles; it does not access the database, network, broker or order-execution layer.
+
+For each candle, the engine computes close-to-close returns over 1/3/6/12 bars; SMA-seeded EMA20/50/200; Wilder RSI14 and ATR14; ATR as a percentage of close; population standard deviation of the trailing 20 one-bar percentage returns; 20-bar Bollinger width; trailing-20 volume z-score; candle range/body and close location. An optional spread cost is calculated only when both a quoted spread and pip size are explicitly supplied; otherwise the cost field is null.
+
+All rolling features are causal and include only the current and prior candles. Warm-up values are null. The full feature set remains `ready=false` with `abstainReason=insufficient_history` until 200 bars are available for EMA200 and all required latest values exist. This is a data-readiness flag only; it is not an entry signal, profitability claim or strategy approval. The engine returns its version and formula/causality definitions alongside the feature series.
+
 ## Acceptance tests
 
 - Valid chronological OHLCV data passes.
