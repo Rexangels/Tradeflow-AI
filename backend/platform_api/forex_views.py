@@ -124,9 +124,31 @@ class ActiveBrokerView(APIView):
     def get(self, request):
         from .services.mt5_client import get_mt5_client
         active = OrderExecutionService.get_active_broker()
-        mt5_overview = get_mt5_client().get_account_overview()
+        try:
+            mt5_overview = get_mt5_client().get_account_overview()
+        except Exception as exc:
+            logger.warning("MT5 account status could not be loaded: %s", exc)
+            mt5_overview = {
+                "mode": "disconnected",
+                "accountNumber": None,
+                "server": None,
+                "currency": None,
+                "isCentAccount": False,
+                "balance": 0.0,
+                "connected": False,
+                "statusNote": "MT5 account could not be verified.",
+            }
+
         alpaca_client = get_alpaca_client()
-        alpaca_acc = alpaca_client.get_account()
+        try:
+            alpaca_acc = alpaca_client.get_account()
+            alpaca_connected = True
+            alpaca_status_note = None
+        except Exception as exc:
+            logger.warning("Alpaca account status could not be loaded: %s", exc)
+            alpaca_acc = {}
+            alpaca_connected = False
+            alpaca_status_note = "Alpaca account could not be verified. Check broker credentials and connectivity."
 
         return Response({
             "activeBroker": active,
@@ -134,17 +156,19 @@ class ActiveBrokerView(APIView):
                 "alpaca": {
                     "name": "Alpaca Securities",
                     "mode": alpaca_client.mode,
-                    "connected": True,
-                    "equity": float(alpaca_acc.get("equity", 0.0)),
+                    "connected": alpaca_connected,
+                    "equity": float(alpaca_acc.get("equity", 0.0) or 0.0),
+                    "statusNote": alpaca_status_note,
                     "supportedAssets": ["US Stocks", "Crypto", "ETFs"],
                 },
                 "mt5": {
                     "name": "Exness MetaTrader 5",
-                    "login": mt5_overview.get("accountNumber", "477536967"),
-                    "server": mt5_overview.get("brokerName", "Exness-MT5Trial9"),
-                    "currency": mt5_overview.get("currency", "USC"),
-                    "isCentAccount": mt5_overview.get("isCentAccount", True),
-                    "balance": mt5_overview.get("balance", 15.0),
+                    "mode": mt5_overview.get("mode", "disconnected"),
+                    "login": mt5_overview.get("accountNumber"),
+                    "server": mt5_overview.get("server"),
+                    "currency": mt5_overview.get("currency"),
+                    "isCentAccount": bool(mt5_overview.get("isCentAccount", False)),
+                    "balance": float(mt5_overview.get("balance", 0.0) or 0.0),
                     "connected": mt5_overview.get("connected", False),
                     "statusNote": mt5_overview.get("statusNote"),
                     "supportedAssets": ["Spot Forex (EUR/USD, GBP/USD)", "Gold (XAU/USD)", "Indices"],

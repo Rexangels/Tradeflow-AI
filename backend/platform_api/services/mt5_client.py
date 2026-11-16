@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone as dt_timezone
@@ -16,6 +17,28 @@ try:
 except ImportError:
     mt5 = None
     MT5_AVAILABLE = False
+
+
+def normalise_mt5_volume(requested_volume: float, symbol_info: Any = None) -> float:
+    """Return a broker-valid volume rounded DOWN; never upscale to a minimum lot."""
+    requested = float(requested_volume)
+    if not math.isfinite(requested) or requested <= 0:
+        raise ValueError("requested volume must be a finite positive number")
+    minimum = float(getattr(symbol_info, "volume_min", 0.0) or 0.0) if symbol_info else 0.0
+    maximum = float(getattr(symbol_info, "volume_max", 0.0) or 0.0) if symbol_info else 0.0
+    step = float(getattr(symbol_info, "volume_step", 0.0) or 0.0) if symbol_info else 0.0
+    if minimum > 0 and requested + 1e-12 < minimum:
+        raise ValueError(f"requested volume {requested:g} is below broker minimum {minimum:g}; risk budget cannot be increased")
+    if maximum > 0 and requested > maximum + 1e-12:
+        raise ValueError(f"requested volume {requested:g} exceeds broker maximum {maximum:g}")
+    final_volume = requested
+    if step > 0:
+        final_volume = math.floor((requested + 1e-12) / step) * step
+    if minimum > 0 and final_volume + 1e-12 < minimum:
+        raise ValueError(f"volume step would reduce the order below broker minimum {minimum:g}")
+    if final_volume <= 0:
+        raise ValueError("requested volume is too small for the broker volume step")
+    return round(final_volume, 8)
 
 
 class MT5Client:
@@ -142,7 +165,7 @@ class MT5Client:
         Returns normalized account metrics for TradeFlow AI.
         """
         if not MT5_AVAILABLE:
-            return self._simulated_account_overview()
+            return self._simulated_account_overview(error="MetaTrader5 package is unavailable.")
 
         if not self._connected:
             conn = self.connect()
@@ -180,15 +203,18 @@ class MT5Client:
         Retrieves all currently active open positions in the MT5 terminal.
         """
         if not MT5_AVAILABLE:
-            return []
+            raise RuntimeError("MetaTrader5 package is unavailable; open positions cannot be verified.")
         if not self._connected:
-            self.connect()
-        if not self._connected:
-            return []
-
+            connection = self.connect()
+            if not connection.get("success"):
+                raise RuntimeError(f"MT5 is disconnected; open positions cannot be verified: {connection.get('error', 'connection failed')}")
         positions = mt5.positions_get()
         if positions is None:
-            return []
+            raise RuntimeError("MT5 positions_get returned no data; open positions cannot be verified.")
+        account_info = mt5.account_info()
+        if account_info is None:
+            raise RuntimeError("MT5 account currency could not be verified while reading open positions.")
+        is_cent_account = "usc" in str(account_info.currency).lower() or "cent" in str(account_info.currency).lower()
 
         result = []
         for pos in positions:
@@ -196,7 +222,8 @@ class MT5Client:
             entry_px = float(pos.price_open)
             curr_px = float(pos.price_current)
             qty_val = float(pos.volume)
-            pnl = round(float(pos.profit), 2)
+            raw_pnl = float(pos.profit)
+            pnl = round(raw_pnl / 100.0 if is_cent_account else raw_pnl, 2)
             cost_val = round(qty_val * entry_px, 2)
             market_val = round(qty_val * curr_px, 2)
             pnl_pct = round((pnl / cost_val) * 100.0, 2) if cost_val > 0 else 0.0
@@ -310,16 +337,11 @@ class MT5Client:
         order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         price = tick.ask if is_buy else tick.bid
 
-        # Validate and clamp volume against Exness broker constraints
-        final_volume = float(volume)
-        if sym_info:
-            if hasattr(sym_info, "volume_min") and sym_info.volume_min > 0:
-                final_volume = max(final_volume, float(sym_info.volume_min))
-            if hasattr(sym_info, "volume_max") and sym_info.volume_max > 0:
-                final_volume = min(final_volume, float(sym_info.volume_max))
-            if hasattr(sym_info, "volume_step") and sym_info.volume_step > 0:
-                steps = round(final_volume / float(sym_info.volume_step))
-                final_volume = round(steps * float(sym_info.volume_step), 2)
+        # Validate broker volume constraints without ever increasing risk.
+        try:
+            final_volume = normalise_mt5_volume(volume, sym_info)
+        except ValueError as exc:
+            return {"success": False, "error": f"MT5 order rejected: {exc}"}
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -339,17 +361,15 @@ class MT5Client:
 
         if stop_loss is not None:
             sl_val = float(stop_loss)
-            if is_buy:
-                request["sl"] = round(sl_val if sl_val < price else (price - (300 * point)), digits)
-            else:
-                request["sl"] = round(sl_val if sl_val > price else (price + (300 * point)), digits)
+            if (is_buy and sl_val >= price) or (not is_buy and sl_val <= price):
+                return {"success": False, "error": "MT5 order rejected: stop-loss is on the wrong side of the executable market price."}
+            request["sl"] = round(sl_val, digits)
 
         if take_profit is not None:
             tp_val = float(take_profit)
-            if is_buy:
-                request["tp"] = round(tp_val if tp_val > price else (price + (600 * point)), digits)
-            else:
-                request["tp"] = round(tp_val if tp_val < price else (price - (600 * point)), digits)
+            if (is_buy and tp_val <= price) or (not is_buy and tp_val >= price):
+                return {"success": False, "error": "MT5 order rejected: take-profit is on the wrong side of the executable market price."}
+            request["tp"] = round(tp_val, digits)
 
         result = mt5.order_send(request)
         if result is None:
@@ -554,22 +574,23 @@ class MT5Client:
         """
         Fallback simulation state while terminal is being launched or configured.
         """
+        # Never return invented balances as if they were a real broker account.
         return {
             "broker": "mt5",
             "brokerName": f"Exness MT5 ({self.server})",
-            "mode": "demo",
-            "accountNumber": str(self.login or "477536967"),
-            "currency": "USC",
-            "isCentAccount": True,
-            "balance": 15.00,
-            "balanceRaw": 1500.0,
-            "equity": 15.00,
-            "equityRaw": 1500.0,
+            "mode": "disconnected",
+            "accountNumber": None,
+            "currency": None,
+            "isCentAccount": False,
+            "balance": 0.0,
+            "balanceRaw": 0.0,
+            "equity": 0.0,
+            "equityRaw": 0.0,
             "margin": 0.0,
-            "marginFree": 1500.0,
-            "leverage": 500,
+            "marginFree": 0.0,
+            "leverage": 1,
             "connected": False,
-            "statusNote": error or "MT5 terminal standby. Open Exness MT5 on Windows to enable live IPC execution.",
+            "statusNote": error or "MT5 account unavailable. Connect a real terminal account before assessing or routing trades.",
         }
 
 

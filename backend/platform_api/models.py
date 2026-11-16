@@ -23,6 +23,45 @@ class Agent(TimeStampedModel):
     strategies = models.JSONField(default=list)
 
 
+class MarketDataSnapshot(models.Model):
+    """Content-addressed, append-only record of the exact candles used in research."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="market_data_snapshots")
+    symbol = models.CharField(max_length=20)
+    timeframe = models.CharField(max_length=8)
+    source = models.CharField(max_length=32, default="unknown")
+    first_bar_at = models.DateTimeField()
+    last_bar_at = models.DateTimeField()
+    candle_count = models.PositiveIntegerField()
+    retrieved_at = models.DateTimeField()
+    content_sha256 = models.CharField(max_length=64)
+    candles = models.JSONField(default=list)
+    validation_report = models.JSONField(default=dict)
+    metadata = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("Market data snapshots are append-only and cannot be updated.")
+        return super().save(*args, **kwargs)
+
+    class Meta:
+        ordering = ("-retrieved_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "symbol", "timeframe", "content_sha256"),
+                name="uniq_market_snapshot_owner_hash",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("owner", "symbol", "timeframe", "-retrieved_at"),
+                name="market_snap_owner_sym_time_idx",
+            ),
+        ]
+
+
 class BacktestRun(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="backtest_runs")
@@ -33,6 +72,13 @@ class BacktestRun(models.Model):
     metrics = models.JSONField(default=dict)
     validation = models.JSONField(default=dict)
     equity_curve = models.JSONField(default=list)
+    snapshot = models.ForeignKey(
+        "MarketDataSnapshot",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="backtest_runs",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
 

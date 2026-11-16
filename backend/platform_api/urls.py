@@ -31,10 +31,14 @@ from .views import (
     HealthView,
     MarketDataCandlesView,
     MarketDataStatusView,
+    MarketDataFeaturesView,
+    MarketDataSnapshotsView,
+    MarketDataSnapshotDetailView,
     PaperTradingAccountView,
     PaperTradingOrdersView,
     PaperTradingSessionView,
     SettingsView,
+    StrategyCatalogView,
 )
 
 urlpatterns = [
@@ -42,9 +46,13 @@ urlpatterns = [
     path("health", HealthView.as_view()),
     path("admin/session", AdminSessionView.as_view()),
     path("agents", AgentsView.as_view()),
+    path("strategies/catalog", StrategyCatalogView.as_view()),
     path("agents/<uuid:agent_id>", AgentDetailView.as_view()),
     path("market-data/candles", MarketDataCandlesView.as_view()),
     path("market-data/status", MarketDataStatusView.as_view()),
+    path("market-data/features", MarketDataFeaturesView.as_view()),
+    path("market-data/snapshots", MarketDataSnapshotsView.as_view()),
+    path("market-data/snapshots/<uuid:snapshot_id>", MarketDataSnapshotDetailView.as_view()),
     path("backtests", BacktestsView.as_view()),
     path("backtests/<uuid:backtest_id>", BacktestDetailView.as_view()),
     path("ai/chat", AiChatView.as_view()),

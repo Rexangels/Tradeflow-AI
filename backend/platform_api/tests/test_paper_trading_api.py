@@ -125,7 +125,7 @@ class PaperTradingApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("daily realized loss limit", detail_text(response))
+        self.assertIn("combined daily loss limit", detail_text(response))
 
     @patch("platform_api.services.paper_trading.latest_price", return_value=100.0)
     def test_respects_kill_switch_from_app_settings(self, _latest_price):

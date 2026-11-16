@@ -9,20 +9,25 @@ from rest_framework.views import APIView
 
 from .auth_utils import ensure_admin_user
 from .defaults import DEFAULT_AGENT
-from .models import Agent, BacktestRun, BacktestTrade, ChatMessage, ChatThread, UsageEvent
+from .models import Agent, BacktestRun, BacktestTrade, ChatMessage, ChatThread, MarketDataSnapshot, UsageEvent
 from .permissions import IsTradeflowAdmin
-from .presenters import serialize_agent, serialize_backtest
+from .presenters import serialize_agent, serialize_backtest, serialize_market_data_snapshot
 from .serializers import (
     AgentPayloadSerializer,
     AiChatSerializer,
     BacktestRequestSerializer,
     LoginSerializer,
     MarketDataQuerySerializer,
+    MarketDataFeaturesQuerySerializer,
     PaperOrderSerializer,
 )
 from .services.ai_orchestrator import handle_chat
 from .services.backtests import run_backtest, trade_timestamp
-from .services.market_data import candle_data_source, get_candles, latest_price
+from .services.market_data import candle_data_source, get_candles, latest_price, market_data_quality_report, normalize_symbol
+from .services.market_data_snapshots import create_market_data_snapshot
+from .services.feature_engine import build_feature_series
+from .services.regime_classifier import classify_regime_series
+from .services.strategy_registry import list_strategy_definitions, strategy_contract_for
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -81,6 +86,15 @@ class AgentsView(APIView):
         return Response(serialize_agent(agent), status=201)
 
 
+class StrategyCatalogView(APIView):
+    """Read-only catalogue of research strategies and their declared limits."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        return Response(list_strategy_definitions())
+
+
 class AgentDetailView(APIView):
     permission_classes = [IsTradeflowAdmin]
 
@@ -118,6 +132,35 @@ class MarketDataCandlesView(APIView):
         return Response(candles)
 
 
+class MarketDataFeaturesView(APIView):
+    """Return deterministic, versioned, causal features for historical candles."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        serializer = MarketDataFeaturesQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        try:
+            candles = get_candles(
+                payload["symbol"],
+                payload["timeframe"],
+                limit=payload["limit"],
+                force_refresh=payload["forceRefresh"],
+            )
+            features = build_feature_series(
+                candles,
+                symbol=normalize_symbol(payload["symbol"]),
+                timeframe=payload["timeframe"],
+                spread_pips=payload.get("spreadPips"),
+                pip_size=payload.get("pipSize"),
+            )
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        features["regime"] = classify_regime_series(features)
+        return Response(features)
+
+
 class MarketDataStatusView(APIView):
     """Read-only verification of the data used for a market symbol.
 
@@ -141,6 +184,7 @@ class MarketDataStatusView(APIView):
 
         source = candle_data_source(candles)
         latest = candles[-1] if candles else None
+        quality = market_data_quality_report(candles, timeframe) if candles else None
         return Response({
             "available": bool(latest),
             "symbol": symbol.upper(),
@@ -149,14 +193,55 @@ class MarketDataStatusView(APIView):
             "isRealData": source in {"mt5", "alpaca"},
             "latestBarTime": latest.get("time") if latest else None,
             "checkedAt": timezone.now().isoformat(),
+            "quality": quality,
         })
+
+
+class MarketDataSnapshotsView(APIView):
+    """List saved research datasets belonging to the authenticated operator."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        queryset = MarketDataSnapshot.objects.filter(owner=request.user)
+        symbol = request.query_params.get("symbol")
+        timeframe = request.query_params.get("timeframe")
+        if symbol:
+            queryset = queryset.filter(symbol=normalize_symbol(symbol))
+        if timeframe:
+            queryset = queryset.filter(timeframe=timeframe)
+
+        try:
+            limit = int(request.query_params.get("limit", "20"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"limit": "Must be an integer between 1 and 100."}) from exc
+        if not 1 <= limit <= 100:
+            raise ValidationError({"limit": "Must be an integer between 1 and 100."})
+
+        snapshots = queryset.order_by("-retrieved_at")[:limit]
+        return Response([serialize_market_data_snapshot(item) for item in snapshots])
+
+
+class MarketDataSnapshotDetailView(APIView):
+    """Return a saved dataset and exact candle payload, scoped to its owner."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request, snapshot_id):
+        snapshot = MarketDataSnapshot.objects.filter(
+            id=snapshot_id,
+            owner=request.user,
+        ).first()
+        if snapshot is None:
+            return Response({"detail": "Market data snapshot not found."}, status=404)
+        return Response(serialize_market_data_snapshot(snapshot, include_candles=True))
 
 
 class BacktestsView(APIView):
     permission_classes = [IsTradeflowAdmin]
 
     def get(self, request):
-        runs = BacktestRun.objects.filter(owner=request.user).select_related("agent").prefetch_related("trades").order_by("-created_at")[:20]
+        runs = BacktestRun.objects.filter(owner=request.user).select_related("agent", "snapshot").prefetch_related("trades").order_by("-created_at")[:20]
         return Response([serialize_backtest(run) for run in runs])
 
     @transaction.atomic
@@ -164,8 +249,26 @@ class BacktestsView(APIView):
         serializer = BacktestRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
-        candles = payload.get("candles") or get_candles(payload["symbol"], payload["timeframe"], limit=payload.get("limit", 500))
+        supplied_candles = payload.get("candles")
+        candles = (
+            supplied_candles
+            if supplied_candles is not None
+            else get_candles(payload["symbol"], payload["timeframe"], limit=payload.get("limit", 500))
+        )
         try:
+            # Resolve and validate the selected strategies before persisting a
+            # dataset, so an invalid engine mix cannot leave an orphan snapshot.
+            strategy_contract_for(payload["agent"])
+            snapshot = create_market_data_snapshot(
+                request.user,
+                payload["symbol"],
+                payload["timeframe"],
+                candles,
+                metadata={
+                    "origin": "request_supplied" if supplied_candles is not None else "provider_fetch",
+                    "requested_limit": payload.get("limit", len(candles)),
+                },
+            )
             result = run_backtest(payload, candles)
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
@@ -192,6 +295,7 @@ class BacktestsView(APIView):
             timeframe=result["timeframe"],
             settings=result["settings"],
             metrics=result["metrics"],
+            snapshot=snapshot,
             validation={
                 **result["validation"],
                 "walkForward": result["walkForward"],
@@ -221,7 +325,7 @@ class BacktestsView(APIView):
             quantity=1,
             metadata={"symbol": run.symbol, "timeframe": run.timeframe},
         )
-        run = BacktestRun.objects.select_related("agent").prefetch_related("trades").get(id=run.id)
+        run = BacktestRun.objects.select_related("agent", "snapshot").prefetch_related("trades").get(id=run.id)
         return Response(serialize_backtest(run), status=201)
 
 
@@ -229,7 +333,7 @@ class BacktestDetailView(APIView):
     permission_classes = [IsTradeflowAdmin]
 
     def get(self, request, backtest_id):
-        run = BacktestRun.objects.select_related("agent").prefetch_related("trades").get(id=backtest_id, owner=request.user)
+        run = BacktestRun.objects.select_related("agent", "snapshot").prefetch_related("trades").get(id=backtest_id, owner=request.user)
         return Response(serialize_backtest(run))
 
 

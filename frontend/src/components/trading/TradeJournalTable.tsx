@@ -3,7 +3,6 @@ import { BookOpen, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { api, type TradeBenchmarkGroup } from "../../lib/api";
 import { queryClient } from "../../lib/query-client";
-import type { TradeLogItem } from "../../shared";
 
 const LESSONS = ["", "good-win", "good-loss", "chased", "early-m15", "news-slip", "spread-wide", "sized-big", "no-setup"];
 

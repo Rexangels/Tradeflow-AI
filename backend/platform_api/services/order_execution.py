@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Any, Optional
 
 from django.conf import settings
@@ -189,17 +190,21 @@ class OrderExecutionService:
             mt5_client = get_mt5_client()
             is_crypto = any(c in norm_sym for c in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "ADA", "BNB"))
             if is_crypto:
-                vol = round(qty, 2)
+                vol = float(qty)
                 logged_qty = vol
-            elif qty <= 10.0:
-                vol = round(qty, 2)
-                logged_qty = vol * 100000.0
             else:
-                vol = round(qty / 100000.0, 2)
-                logged_qty = qty
-
+                requested_lots = float(qty) if qty <= 10.0 else float(qty) / 100000.0
+                # Round down to the conventional FX 0.01-lot step. The MT5
+                # gateway applies the symbol-specific minimum/step afterwards.
+                vol = math.floor((requested_lots + 1e-12) * 100.0) / 100.0
+                logged_qty = vol * 100000.0
             if vol < 0.01:
-                vol = 0.01
+                return {
+                    "success": False,
+                    "broker": "MetaTrader 5",
+                    "error": "Order rejected: calculated volume is below the 0.01-lot minimum. Trade risk must not be increased to meet broker minimums.",
+                    "risk_assessment": assessment,
+                }
             mt5_res = mt5_client.execute_order(
                 symbol=disp_sym,
                 side=side,
@@ -270,8 +275,15 @@ class OrderExecutionService:
                 take_profit_price=take_profit,
             )
         except AlpacaAPIError as exc:
-            # Fallback handling: in case of non-bracket allowed asset or pair formatting
-            logger.warning(f"Primary order submission failed: {exc}. Retrying standard market/limit order...")
+            # Never retry a protected order as an unprotected market/limit order.
+            if stop_loss is not None or take_profit is not None:
+                logger.error("Protected Alpaca order rejected; refusing unprotected fallback: %s", exc)
+                return {
+                    "success": False,
+                    "error": f"Protected order rejected by broker; no unprotected fallback was submitted: {exc}",
+                    "risk_assessment": assessment,
+                }
+            logger.warning("Unprotected Alpaca order failed; retrying standard order: %s", exc)
             try:
                 alpaca_response = client.place_order(
                     symbol=disp_sym,
@@ -282,7 +294,7 @@ class OrderExecutionService:
                     limit_price=limit_price,
                 )
             except AlpacaAPIError as second_exc:
-                logger.error(f"Alpaca order execution completely failed: {second_exc}")
+                logger.error("Alpaca order execution completely failed: %s", second_exc)
                 return {
                     "success": False,
                     "error": str(second_exc),

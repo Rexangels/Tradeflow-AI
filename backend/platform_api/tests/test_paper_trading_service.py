@@ -47,26 +47,33 @@ class PaperTradingServiceTests(TestCase):
         self.assertAlmostEqual(self.account.realized_pnl, sell_result["order"]["realizedPnl"], places=4)
         self.assertGreater(sell_result["account"]["cashBalance"], buy_result["account"]["cashBalance"])
 
-    @patch("platform_api.services.paper_trading.latest_price", side_effect=[100.0, 100.0, 120.0, 120.0])
-    def test_multiple_buys_update_average_entry_price(self, _latest_price):
-        first = place_order(
-            self.user,
-            {
-                "symbol": "SOLUSDT",
-                "side": "buy",
-                "notional": 200,
-                "timeframe": "1h",
-            },
-        )
-        second = place_order(
-            self.user,
-            {
-                "symbol": "SOLUSDT",
-                "side": "buy",
-                "notional": 240,
-                "timeframe": "1h",
-            },
-        )
+    def test_multiple_buys_update_average_entry_price(self):
+        price_calls = 0
+
+        def market_price(*_args):
+            nonlocal price_calls
+            price_calls += 1
+            return 100.0 if price_calls <= 2 else 120.0
+
+        with patch("platform_api.services.paper_trading.latest_price", side_effect=market_price):
+            first = place_order(
+                self.user,
+                {
+                    "symbol": "SOLUSDT",
+                    "side": "buy",
+                    "notional": 200,
+                    "timeframe": "1h",
+                },
+            )
+            second = place_order(
+                self.user,
+                {
+                    "symbol": "SOLUSDT",
+                    "side": "buy",
+                    "notional": 240,
+                    "timeframe": "1h",
+                },
+            )
 
         position = second["account"]["positions"][0]
         self.assertEqual(first["account"]["riskPolicy"]["currentOpenPositions"], 1)

@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 import hashlib
 import json
 from math import cos, sin
+import logging
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -11,6 +12,9 @@ from django.utils import timezone
 
 from platform_api.models import MarketDataCache
 from .alpaca_client import get_alpaca_client
+from .market_data_quality import MarketDataQualityError, validate_candles
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
 TIMEFRAME_TO_MINUTES = {
@@ -195,9 +199,8 @@ def _fetch_mt5_bars(symbol: str, timeframe: str, limit: int, include_forming: bo
         mt5_tf = tf_map.get(timeframe, mt5.TIMEFRAME_H1)
         start_pos = 0 if include_forming else 1
         rates = mt5.copy_rates_from_pos(actual, mt5_tf, start_pos, limit)
-        if rates is None or len(rates) == 0:
-            # Fallback to pos 0 if terminal only has 1 bar cached
-            rates = mt5.copy_rates_from_pos(actual, mt5_tf, 0, limit)
+        # Never fall back from the last completed bar (pos=1) to pos=0:
+        # pos=0 is the currently forming candle and can repaint during research.
         if rates is None or len(rates) == 0:
             return []
         candles = []
@@ -236,38 +239,44 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
 
     ttl = timedelta(seconds=getattr(settings, "MARKET_DATA_CACHE_TTL_SECONDS", 60))
     if cache_entry and not force_refresh and timezone.now() - cache_entry.updated_at <= ttl:
-        cached_source = candle_data_source(cache_entry.payload)
-        if fallback_mode == "synthetic" or cached_source not in {SYNTHETIC_SOURCE, "unknown", "mixed"}:
-            return cache_entry.payload
+        try:
+            validate_candles(cache_entry.payload)
+            cached_source = candle_data_source(cache_entry.payload)
+            if fallback_mode == "synthetic" or cached_source not in {SYNTHETIC_SOURCE, "unknown", "mixed"}:
+                return cache_entry.payload
+        except (MarketDataQualityError, TypeError, AttributeError) as exc:
+            logger.warning("Ignoring invalid market-data cache for %s %s: %s", normalized_symbol, timeframe, exc)
 
-    # 1. Attempt to load real historical candles from MetaTrader 5 (Exness)
+    def cache_validated(bars: list[dict], source: str) -> list[dict]:
+        tagged = _with_source(bars, source)
+        validate_candles(tagged)
+        MarketDataCache.objects.update_or_create(
+            symbol=normalized_symbol,
+            timeframe=timeframe,
+            limit=limit,
+            defaults={"payload": tagged},
+        )
+        return tagged
+
+    # 1. Attempt to load real historical candles from MetaTrader 5 (Exness).
     try:
         mt5_bars = _fetch_mt5_bars(normalized_symbol, timeframe, limit)
-        if mt5_bars and len(mt5_bars) > 0:
-            MarketDataCache.objects.update_or_create(
-                symbol=normalized_symbol,
-                timeframe=timeframe,
-                limit=limit,
-                defaults={"payload": mt5_bars},
-            )
-            return mt5_bars
-    except Exception:
-        pass
+        if mt5_bars:
+            return cache_validated(mt5_bars, "mt5")
+    except (MarketDataQualityError, TypeError, ValueError) as exc:
+        logger.warning("Rejecting MT5 candles for %s %s: %s", normalized_symbol, timeframe, exc)
+    except Exception as exc:
+        logger.warning("MT5 market-data fetch failed for %s %s: %s", normalized_symbol, timeframe, exc)
 
-    # 2. Attempt to load candles from Alpaca API if available
+    # 2. Attempt to load candles from Alpaca API if available.
     try:
         alpaca_bars = _fetch_alpaca_bars(normalized_symbol, timeframe, limit)
-        if alpaca_bars and len(alpaca_bars) > 0:
-            alpaca_bars = _with_source(alpaca_bars, "alpaca")
-            MarketDataCache.objects.update_or_create(
-                symbol=normalized_symbol,
-                timeframe=timeframe,
-                limit=limit,
-                defaults={"payload": alpaca_bars},
-            )
-            return alpaca_bars
-    except Exception:
-        pass
+        if alpaca_bars:
+            return cache_validated(alpaca_bars, "alpaca")
+    except (MarketDataQualityError, TypeError, ValueError) as exc:
+        logger.warning("Rejecting Alpaca candles for %s %s: %s", normalized_symbol, timeframe, exc)
+    except Exception as exc:
+        logger.warning("Alpaca market-data fetch failed for %s %s: %s", normalized_symbol, timeframe, exc)
 
     # Generated candles are useful for a UI demo only. They must never be a
     # hidden fallback for research, paper-trading validation, or live routing.
@@ -283,6 +292,7 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
 
     # 3. High-fidelity realistic forex candle generation (explicit demo mode)
     payload = _with_source(_generate_forex_candles(normalized_symbol, timeframe, limit), SYNTHETIC_SOURCE)
+    validate_candles(payload)
     MarketDataCache.objects.update_or_create(
         symbol=normalized_symbol,
         timeframe=timeframe,
@@ -290,6 +300,51 @@ def get_candles(symbol: str, timeframe: str = "1h", limit: int = 500, force_refr
         defaults={"payload": payload},
     )
     return payload
+
+
+def market_data_quality_report(candles: list[dict], timeframe: str, now=None) -> dict:
+    """Return non-destructive freshness and interval-gap diagnostics.
+
+    Gaps are reported, not automatically repaired or rejected: market sessions,
+    weekends and holidays can legitimately create discontinuities. Freshness is
+    approximate until provider-specific trading calendars are available.
+    """
+    summary = validate_candles(candles)
+    if timeframe not in TIMEFRAME_TO_MINUTES:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+    timestamps = []
+    for candle in candles:
+        value = candle.get("time", candle.get("timestamp"))
+        if isinstance(value, (int, float)):
+            parsed = datetime.fromtimestamp(value, tz=dt_timezone.utc)
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        timestamps.append(parsed.astimezone(dt_timezone.utc))
+
+    interval = timedelta(minutes=TIMEFRAME_TO_MINUTES[timeframe])
+    missing_intervals = 0
+    gap_count = 0
+    for previous, current in zip(timestamps, timestamps[1:]):
+        delta = current - previous
+        if delta > interval * 1.5:
+            gap_count += 1
+            missing_intervals += max(0, int(delta.total_seconds() // interval.total_seconds()) - 1)
+
+    checked_at = now or timezone.now()
+    checked_at = checked_at.astimezone(dt_timezone.utc)
+    age_seconds = max(0.0, (checked_at - timestamps[-1]).total_seconds())
+    stale_after_seconds = max(interval.total_seconds() * 3, 300)
+    return {
+        **summary,
+        "timeframe": timeframe,
+        "checked_at": checked_at.isoformat(),
+        "latest_bar_age_seconds": round(age_seconds, 2),
+        "freshness_threshold_seconds": stale_after_seconds,
+        "freshness": "stale" if age_seconds > stale_after_seconds else "recent",
+        "gap_count": gap_count,
+        "missing_intervals_estimate": missing_intervals,
+        "gap_policy": "diagnostic_only_market_calendar_not_applied",
+    }
 
 
 def latest_price(symbol: str, timeframe: str = "1m") -> float:

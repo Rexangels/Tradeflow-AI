@@ -221,6 +221,7 @@ export const api = {
       method: "DELETE",
     }),
   getAgents: () => request<AgentConfig[]>("/agents"),
+  getStrategyCatalog: () => request<StrategyRegistryItem[]>("/strategies/catalog"),
   createAgent: (payload: Omit<AgentConfig, "id" | "createdAt" | "updatedAt">) =>
     request<AgentConfig>("/agents", {
       method: "POST",
@@ -233,8 +234,14 @@ export const api = {
     }),
   getCandles: (symbol: string, timeframe: string, limit = 300, forceRefresh = false) =>
     request<Candle[]>(`/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&forceRefresh=${forceRefresh}`),
+  getMarketDataFeatures: (symbol: string, timeframe: string, limit = 500) =>
+    request<MarketDataFeatureResponse>(`/market-data/features?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`),
   getMarketDataStatus: (symbol: string, timeframe: string) =>
     request<MarketDataStatusResponse>(`/market-data/status?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`),
+  getMarketDataSnapshots: (symbol: string, timeframe: string, limit = 5) =>
+    request<MarketDataSnapshotSummary[]>(`/market-data/snapshots?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`),
+  getMarketDataSnapshot: (snapshotId: string) =>
+    request<MarketDataSnapshotDetail>(`/market-data/snapshots/${encodeURIComponent(snapshotId)}`),
   getBacktests: () => request<BacktestResult[]>("/backtests"),
   runBacktest: (payload: BacktestRequest) =>
     request<BacktestResult>("/backtests", {
@@ -414,6 +421,136 @@ export const api = {
     request<MTFConfluenceResponse>(`/market/mtf-confluence/${encodeURIComponent(symbol)}`),
 };
 
+export interface MarketDataQualityDiagnostics {
+  valid: boolean;
+  count: number;
+  first_time: string | number;
+  last_time: string | number;
+  source: string;
+  timeframe: string;
+  checked_at: string;
+  latest_bar_age_seconds: number;
+  freshness_threshold_seconds: number;
+  freshness: "recent" | "stale";
+  gap_count: number;
+  missing_intervals_estimate: number;
+  gap_policy: string;
+}
+
+export interface MarketFeatureValues {
+  return1Pct: number | null;
+  return3Pct: number | null;
+  return6Pct: number | null;
+  return12Pct: number | null;
+  ema20: number | null;
+  ema50: number | null;
+  ema200: number | null;
+  ema20Vs50Pct: number | null;
+  ema50Vs200Pct: number | null;
+  closeVsEma200Pct: number | null;
+  rsi14: number | null;
+  atr14: number | null;
+  atrPct: number | null;
+  volatility20Pct: number | null;
+  bollingerWidth20Pct: number | null;
+  volumeZScore20: number | null;
+  candleRangePct: number;
+  candleBodyPct: number;
+  signedCandleBodyPct: number;
+  closeLocation: number | null;
+  spreadPips: number | null;
+  spreadCostPct: number | null;
+}
+
+export interface MarketFeatureSeriesRow {
+  index: number;
+  time: string;
+  features: MarketFeatureValues;
+}
+
+export interface MarketRegimeSeriesRow {
+  index: number;
+  time: string;
+  regime: "UPTREND" | "DOWNTREND" | "RANGE" | "HIGH_VOLATILITY" | "UNCERTAIN";
+  trendBias: "UPTREND" | "DOWNTREND" | "RANGE" | "UNCERTAIN";
+  classificationReady: boolean;
+  reason: string;
+  volatility20Pct: number | null;
+  highVolatilityThreshold: number | null;
+  volatilityPercentileVsHistory: number | null;
+  volatilityReferenceSamples: number;
+  liquidityStatus: "not_assessed";
+  executionAuthority: "none";
+}
+
+export interface MarketRegimeResponse {
+  classifierVersion: string;
+  featureSetVersion: string | null;
+  symbol: string;
+  timeframe: string;
+  asOf: string;
+  barCount: number;
+  ready: boolean;
+  regime: MarketRegimeSeriesRow["regime"];
+  trendBias: MarketRegimeSeriesRow["trendBias"];
+  reason: string;
+  liquidityStatus: "not_assessed";
+  executionAuthority: "none";
+  latest: MarketRegimeSeriesRow;
+  thresholds: Record<string, number | string>;
+  series: MarketRegimeSeriesRow[];
+}
+
+export interface StrategyRegistryItem {
+  strategy_id: string;
+  name: string;
+  version: string;
+  description: string;
+  engine: string;
+  required_features: string[];
+  eligible_regimes: string[];
+  minimum_bars: number;
+  regime_policy: string;
+  implementation_status: string;
+  execution_authority: "none";
+  aliases: string[];
+}
+
+export interface MarketDataFeatureResponse {
+  featureSetVersion: string;
+  symbol: string;
+  timeframe: string;
+  source: string;
+  asOf: string;
+  barCount: number;
+  requiredBars: number;
+  warmupBars: number;
+  ready: boolean;
+  abstainReason: string | null;
+  featureDefinitions: Record<string, string>;
+  regime: MarketRegimeResponse;
+  latest: MarketFeatureValues;
+  series: MarketFeatureSeriesRow[];
+}
+
+export interface MarketDataSnapshotSummary {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  source: string;
+  firstBarAt: string;
+  lastBarAt: string;
+  candleCount: number;
+  capturedAt: string;
+  contentSha256: string;
+  validation: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+export interface MarketDataSnapshotDetail extends MarketDataSnapshotSummary {
+  candles: Candle[];
+}
+
 export interface MarketDataStatusResponse {
   available: boolean;
   symbol: string;
@@ -422,6 +559,7 @@ export interface MarketDataStatusResponse {
   isRealData?: boolean;
   latestBarTime?: string | null;
   checkedAt?: string;
+  quality?: MarketDataQualityDiagnostics | null;
   error?: string;
 }
 

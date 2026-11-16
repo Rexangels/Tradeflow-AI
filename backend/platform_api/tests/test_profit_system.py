@@ -156,6 +156,11 @@ class ArchitectureUpgradeTests(TestCase):
     def test_risk_manager_jpy_unit_risk_and_usd_correlation_guard(self):
         from platform_api.services.risk_manager import RiskManager
 
+        # This test isolates the correlation guard, not the micro-account
+        # one-position default. A five-position cap lets the 3rd correlated
+        # position be the rule under examination.
+        RiskManager.update_rule("max_positions", 5)
+
         # 1. JPY quote risk conversion: 0.30 JPY on USD/JPY @ 150.00 is $0.002/unit, not $0.30/unit
         jpy_unit_risk = RiskManager.unit_risk_in_usd("USD/JPY", 150.0, 149.70)
         self.assertAlmostEqual(jpy_unit_risk, 0.30 / 150.0, places=5)

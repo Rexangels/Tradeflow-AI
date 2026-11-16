@@ -34,6 +34,16 @@ export function MarketDataPage() {
     queryFn: () => api.getMarketDataStatus(symbol, timeframe),
     refetchInterval: 60_000,
   });
+  const snapshotsQuery = useQuery({
+    queryKey: ["market-data-snapshots", symbol, timeframe],
+    queryFn: () => api.getMarketDataSnapshots(symbol, timeframe, 5),
+    refetchInterval: 60_000,
+  });
+  const featuresQuery = useQuery({
+    queryKey: ["market-data-features", symbol, timeframe],
+    queryFn: () => api.getMarketDataFeatures(symbol, timeframe, 500),
+    staleTime: 30_000,
+  });
 
   const chatMutation = useMutation({
     mutationFn: () => api.chat({ message, symbol, timeframe, threadId }),
@@ -49,6 +59,11 @@ export function MarketDataPage() {
   const candles = candlesQuery.data ?? [];
   const candleError = candlesQuery.error ? (candlesQuery.error as Error).message : null;
   const status = marketStatusQuery.data;
+  const latestFeatures = featuresQuery.data?.latest;
+  const regime = featuresQuery.data?.regime;
+  const latestRegime = regime?.latest;
+  const formatFeature = (value: number | null, suffix = "") =>
+    value === null ? "Warming up" : `${value.toFixed(2)}${suffix}`;
   const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
   const isSynthetic = candleSource === "synthetic_demo";
   const sourceLabel = candleSource === "synthetic_demo"
@@ -103,6 +118,224 @@ export function MarketDataPage() {
             </div>
           )}
         </div>
+      </section>
+
+      {status?.quality && (
+        <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100">Historical Data Quality</h3>
+              <p className="mt-1 text-[11px] text-slate-400">
+                {status.quality.count.toLocaleString()} validated bars · checked {new Date(status.quality.checked_at).toLocaleTimeString()}
+              </p>
+            </div>
+            <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wider ${
+              status.quality.freshness === "recent"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+            }`}>
+              {status.quality.freshness === "recent" ? "Recent bar" : "Possibly stale"}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Latest bar age</p>
+              <p className="mt-1 font-mono text-sm text-slate-100">
+                {Math.round(status.quality.latest_bar_age_seconds / 60)} min
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Detected gaps</p>
+              <p className="mt-1 font-mono text-sm text-slate-100">
+                {status.quality.gap_count} · ~{status.quality.missing_intervals_estimate} intervals
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Quality status</p>
+              <p className="mt-1 text-sm font-semibold text-emerald-300">
+                {status.quality.valid ? "Schema valid" : "Invalid"}
+              </p>
+            </div>
+          </div>
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+            Freshness and gap counts are preliminary diagnostics. Market-session, weekend and holiday calendars are not yet applied; a reported gap is not automatically a missing-data fault.
+          </p>
+        </section>
+      )}
+
+      <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Causal Research Features</h3>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Versioned indicator and market-state inputs · no future candles used
+            </p>
+            {featuresQuery.data && (
+              <p className="mt-1 text-[10px] text-slate-500">
+                {featuresQuery.data.symbol} · {featuresQuery.data.timeframe} · {featuresQuery.data.barCount} bars · as of {new Date(featuresQuery.data.asOf).toLocaleString()}
+              </p>
+            )}
+          </div>
+          {featuresQuery.data && (
+            <div className="text-right">
+              <p className={`text-xs font-semibold ${featuresQuery.data.ready ? "text-emerald-300" : "text-amber-300"}`}>
+                {featuresQuery.data.ready ? "Feature set ready" : "NO TRADE · insufficient history"}
+              </p>
+              <p className="mt-1 font-mono text-[10px] text-slate-500">
+                v{featuresQuery.data.featureSetVersion} · {featuresQuery.data.requiredBars} bars required
+              </p>
+            </div>
+          )}
+        </div>
+        {featuresQuery.isLoading ? (
+          <p className="mt-4 text-xs text-slate-500">Calculating historical features…</p>
+        ) : featuresQuery.error ? (
+          <p className="mt-4 text-xs text-amber-300">
+            Feature data unavailable: {(featuresQuery.error as Error).message}
+          </p>
+        ) : latestFeatures ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">RSI 14</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.rsi14)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">ATR 14</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.atr14)}</p>
+                <p className="mt-1 text-[10px] text-slate-500">{formatFeature(latestFeatures.atrPct, "% of price")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">EMA 20 / 50 Spread</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.ema20Vs50Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">EMA 50 / 200 Spread</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.ema50Vs200Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">20-Bar Volatility</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.volatility20Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Bollinger Width 20</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.bollingerWidth20Pct, "%")}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Volume Z-Score 20</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.volumeZScore20)}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">12-Bar Return</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">{formatFeature(latestFeatures.return12Pct, "%")}</p>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+              These are research features, not entry signals. A ready feature set only means the minimum lookback is available; it does not mean a strategy has an edge. Spread-cost features are omitted unless verified spread and pip-size inputs are explicitly supplied.
+            </p>
+          </>
+        ) : null}
+      </section>
+
+      <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Market Regime Classifier</h3>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Transparent historical rules · classifier v{regime?.classifierVersion ?? "—"}
+            </p>
+          </div>
+          {regime && (
+            <div className="text-right">
+              <p className={`text-sm font-semibold ${
+                regime.regime === "UPTREND" || regime.regime === "DOWNTREND"
+                  ? "text-cyan-300"
+                  : regime.regime === "HIGH_VOLATILITY"
+                    ? "text-amber-300"
+                    : regime.regime === "RANGE"
+                      ? "text-slate-200"
+                      : "text-amber-300"
+              }`}>
+                {regime.regime === "UNCERTAIN" ? "UNCERTAIN · NO TRADE" : regime.regime.replaceAll("_", " ")}
+              </p>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Trend structure: {regime.trendBias.replaceAll("_", " ")}
+              </p>
+            </div>
+          )}
+        </div>
+        {featuresQuery.isLoading ? (
+          <p className="mt-3 text-xs text-slate-500">Classifying market conditions…</p>
+        ) : regime ? (
+          <>
+            <p className="mt-3 text-xs leading-relaxed text-slate-300">{regime.reason}</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Volatility rank</p>
+                <p className="mt-1 font-mono text-sm text-slate-100">
+                  {latestRegime?.volatilityPercentileVsHistory == null
+                    ? "Not available"
+                    : `${latestRegime.volatilityPercentileVsHistory.toFixed(1)}th percentile`}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Liquidity</p>
+                <p className="mt-1 text-sm text-slate-100">Not assessed</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Execution authority</p>
+                <p className="mt-1 text-sm text-slate-100">None</p>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+              Regime labels describe historical conditions; they are not trade entries. High-volatility labels compare current volatility with the preceding 100 bars. Liquidity remains unassessed until reliable spread and market-depth inputs are available.
+            </p>
+          </>
+        ) : (
+          <p className="mt-3 text-xs text-amber-300">Regime classification is unavailable.</p>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-slate-800/80 bg-slate-950/70 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Saved Research Datasets</h3>
+            <p className="mt-1 text-[11px] text-slate-400">Backtests save the exact candle payload and its SHA-256 fingerprint.</p>
+          </div>
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">
+            {snapshotsQuery.data?.length ?? 0} saved
+          </span>
+        </div>
+        {snapshotsQuery.isLoading ? (
+          <p className="mt-3 text-xs text-slate-500">Loading saved datasets…</p>
+        ) : snapshotsQuery.data && snapshotsQuery.data.length > 0 ? (
+          <div className="mt-3 divide-y divide-slate-800/70">
+            {snapshotsQuery.data.map((snapshot) => (
+              <div key={snapshot.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-slate-200">
+                    {snapshot.symbol} · {snapshot.timeframe} · {snapshot.candleCount.toLocaleString()} bars
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    {snapshot.source} · {new Date(snapshot.capturedAt).toLocaleString()}
+                  </p>
+                </div>
+                <div className="text-left sm:text-right">
+                  <p className="font-mono text-[10px] text-cyan-300" title={snapshot.contentSha256}>
+                    SHA-256 {snapshot.contentSha256.slice(0, 16)}…
+                  </p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    {new Date(snapshot.firstBarAt).toLocaleString()} – {new Date(snapshot.lastBarAt).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-slate-500">
+            No saved dataset for this pair and timeframe yet. Run a backtest to capture one.
+          </p>
+        )}
       </section>
 
       {candleError && (
