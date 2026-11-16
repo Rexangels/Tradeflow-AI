@@ -27,7 +27,7 @@ from .services.market_data import candle_data_source, get_candles, latest_price,
 from .services.market_data_snapshots import create_market_data_snapshot
 from .services.feature_engine import build_feature_series
 from .services.regime_classifier import classify_regime_series
-from .services.strategy_registry import list_strategy_definitions
+from .services.strategy_registry import list_strategy_definitions, strategy_contract_for
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -256,6 +256,9 @@ class BacktestsView(APIView):
             else get_candles(payload["symbol"], payload["timeframe"], limit=payload.get("limit", 500))
         )
         try:
+            # Resolve and validate the selected strategies before persisting a
+            # dataset, so an invalid engine mix cannot leave an orphan snapshot.
+            strategy_contract_for(payload["agent"])
             snapshot = create_market_data_snapshot(
                 request.user,
                 payload["symbol"],
