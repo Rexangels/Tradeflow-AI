@@ -77,11 +77,12 @@ Implemented on the current feature branch:
 - Added GitHub Actions CI for backend checks/migrations/tests and frontend type-check/tests/build.
 - Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, API response fields, and MT5 forming-bar exclusion.
 
-Still outstanding before Phase 1 is complete:
-- Add provider-specific freshness/session-calendar handling and stronger incomplete-window diagnostics.
-- Present the quality diagnostics in the React frontend.
-- Add market-session calendars and strengthen partial-window diagnostics; gap counts currently do not distinguish exchange closures from missing provider bars.
-- Run the backend and frontend test suites through CI and resolve any failures.
-- Add provider-session calendars and provider sandbox verification where available.
+Phase 1 verification:
+- GitHub Actions passed on commit `21a064c5`.
+- Backend: dependency installation, Django system checks, migration-drift check and all 105 Django tests passed.
+- Frontend: type-check, all frontend tests and production build passed.
 
-The new and existing tests have been written but have not yet been executed in this environment.
+Remaining data-quality hardening:
+- Add provider/session calendars and stronger incomplete-window diagnostics. Current gap estimates remain explicitly diagnostic and do not distinguish exchange closures, weekends and holidays.
+- Perform provider-specific sandbox verification where available.
+
