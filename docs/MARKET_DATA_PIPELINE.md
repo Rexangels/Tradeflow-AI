@@ -73,13 +73,15 @@ Implemented on the current feature branch:
 - Backtest runs now retain a foreign key to the exact snapshot used; their API responses expose the snapshot ID and hash.
 - Added owner-scoped read-only snapshot list/detail endpoints. Detail returns the exact stored candles; list responses return metadata without the candle payload.
 - Added service and API tests for deduplication, changed payload hashes, invalid data rejection, UTC timestamps and owner isolation.
+- Added a React Market Data quality panel and saved-dataset list, and restored the `/market-data` route in the sidebar.
+- Added GitHub Actions CI for backend checks/migrations/tests and frontend type-check/tests/build.
 - Integration tests cover valid provider caching, invalid provider rejection, invalid-cache refresh, diagnostics, API response fields, and MT5 forming-bar exclusion.
 
 Still outstanding before Phase 1 is complete:
 - Add provider-specific freshness/session-calendar handling and stronger incomplete-window diagnostics.
 - Present the quality diagnostics in the React frontend.
 - Add market-session calendars and strengthen partial-window diagnostics; gap counts currently do not distinguish exchange closures from missing provider bars.
-- Present snapshot identity and quality diagnostics in the React frontend.
-- Run the new tests and the broader Django suite; add provider sandbox verification where available.
+- Run the backend and frontend test suites through CI and resolve any failures.
+- Add provider-session calendars and provider sandbox verification where available.
 
 The new and existing tests have been written but have not yet been executed in this environment.
