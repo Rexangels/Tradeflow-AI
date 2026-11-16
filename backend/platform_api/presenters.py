@@ -19,6 +19,25 @@ def serialize_agent(agent: Agent) -> dict[str, Any]:
     }
 
 
+def serialize_market_data_snapshot(snapshot, include_candles: bool = False) -> dict[str, Any]:
+    payload = {
+        "id": str(snapshot.id),
+        "symbol": snapshot.symbol,
+        "timeframe": snapshot.timeframe,
+        "source": snapshot.source,
+        "firstBarAt": snapshot.first_bar_at.isoformat(),
+        "lastBarAt": snapshot.last_bar_at.isoformat(),
+        "candleCount": snapshot.candle_count,
+        "capturedAt": snapshot.retrieved_at.isoformat(),
+        "contentSha256": snapshot.content_sha256,
+        "validation": snapshot.validation_report,
+        "metadata": snapshot.metadata,
+    }
+    if include_candles:
+        payload["candles"] = snapshot.candles
+    return payload
+
+
 def serialize_backtest(run: BacktestRun) -> dict[str, Any]:
     stored_validation = run.validation or {
         "candlesChecked": len(run.equity_curve),
@@ -103,6 +122,7 @@ def serialize_backtest(run: BacktestRun) -> dict[str, Any]:
         "id": str(run.id),
         "symbol": run.symbol,
         "timeframe": run.timeframe,
+        "dataSnapshot": serialize_market_data_snapshot(run.snapshot) if run.snapshot_id else None,
         "agent": serialize_agent(run.agent),
         "settings": run.settings,
         "metrics": run.metrics,
