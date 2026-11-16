@@ -74,3 +74,7 @@ For production Postgres deployments, install a PostgreSQL driver such as `psycop
 
 ## Research documentation
 - [Market Regime Classifier & Evaluation](docs/MARKET_REGIME_CLASSIFICATION.md)
+
+
+## Strategy research
+- [Strategy Registry](docs/STRATEGY_REGISTRY.md)
