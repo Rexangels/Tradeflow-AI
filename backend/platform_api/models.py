@@ -41,6 +41,11 @@ class MarketDataSnapshot(models.Model):
     metadata = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("Market data snapshots are append-only and cannot be updated.")
+        return super().save(*args, **kwargs)
+
     class Meta:
         ordering = ("-retrieved_at",)
         constraints = [
