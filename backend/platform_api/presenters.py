@@ -61,6 +61,7 @@ def serialize_backtest(run: BacktestRun) -> dict[str, Any]:
         "warnings": ["Walk-forward data is not available for this run."],
         "windows": [],
     }
+    strategy_contract = validation.pop("strategyContract", None)
     model_analysis = validation.pop("modelAnalysis", None) or {
         "available": False,
         "modelType": "baseline_logistic_regression",
@@ -127,6 +128,7 @@ def serialize_backtest(run: BacktestRun) -> dict[str, Any]:
         "settings": run.settings,
         "metrics": run.metrics,
         "validation": validation,
+        "strategyContract": strategy_contract,
         "walkForward": walk_forward,
         "modelAnalysis": model_analysis,
         "equityCurve": run.equity_curve,
