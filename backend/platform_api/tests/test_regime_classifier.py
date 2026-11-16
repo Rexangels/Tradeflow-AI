@@ -60,6 +60,9 @@ class RegimeClassifierTests(SimpleTestCase):
             symbol="EURUSD",
             timeframe="1h",
         )
+        # Isolate trend direction from the separate volatility-percentile rule.
+        for row in features["series"]:
+            row["features"]["volatility20Pct"] = 0.1
         result = classify_regime_series(features)
 
         self.assertEqual(result["regime"], "DOWNTREND")
