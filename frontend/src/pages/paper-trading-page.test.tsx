@@ -7,7 +7,7 @@ import { PaperTradingPage } from "./paper-trading-page";
 
 describe("PaperTradingPage", () => {
   it("renders the current broker execution, risk and journal workspaces without submitting an order", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       let payload: unknown = {};
 
