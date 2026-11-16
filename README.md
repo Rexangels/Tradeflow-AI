@@ -70,3 +70,7 @@ For a $10 paper experiment, configure the PAPER_* variables in the backend envir
 The backend is written to accept a PostgreSQL `DATABASE_URL`. In this workspace it can also fall back to SQLite for quick local validation if `DATABASE_URL` is not set.
 
 For production Postgres deployments, install a PostgreSQL driver such as `psycopg[binary]` in the Python environment.
+
+
+## Research documentation
+- [Market Regime Classifier & Evaluation](docs/MARKET_REGIME_CLASSIFICATION.md)
