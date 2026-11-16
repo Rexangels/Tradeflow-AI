@@ -61,7 +61,7 @@ export function MarketDataPage() {
   const status = marketStatusQuery.data;
   const latestFeatures = featuresQuery.data?.latest;
   const regime = featuresQuery.data?.regime;
-  const latestRegime = regime?.series.at(-1);
+  const latestRegime = regime?.latest;
   const formatFeature = (value: number | null, suffix = "") =>
     value === null ? "Warming up" : `${value.toFixed(2)}${suffix}`;
   const candleSource = status?.source ?? candles[0]?.source ?? "unknown";
