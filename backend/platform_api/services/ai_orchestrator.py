@@ -1196,7 +1196,7 @@ def _model_analysis_context(symbol: str, model_analysis: Optional[dict[str, Any]
     if accuracy is not None:
         details.append(f"out-of-sample test accuracy {float(accuracy):.2f}%")
 
-    content = f"Model analysis for {symbol}: " + "; ".join(details) + ". Short-horizon forecast. "
+    content = f"Model analysis for {symbol}: " + "; ".join(details) + ". It is a short-horizon forecast. "
     if explanation.get("summary"):
         content += f" {explanation['summary']}"
     return ToolContext(name="model_analysis", content=content)
