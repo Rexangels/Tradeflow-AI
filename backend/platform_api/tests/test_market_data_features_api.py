@@ -42,6 +42,7 @@ class MarketDataFeaturesApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["featureSetVersion"], "1.0.0")
+        self.assertIn("causality", response.data["featureDefinitions"])
         self.assertTrue(response.data["ready"])
         self.assertEqual(response.data["symbol"], "EURUSD")
         self.assertEqual(response.data["source"], "fixture")
