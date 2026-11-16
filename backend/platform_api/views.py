@@ -22,7 +22,7 @@ from .serializers import (
 )
 from .services.ai_orchestrator import handle_chat
 from .services.backtests import run_backtest, trade_timestamp
-from .services.market_data import candle_data_source, get_candles, latest_price
+from .services.market_data import candle_data_source, get_candles, latest_price, market_data_quality_report
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -141,6 +141,7 @@ class MarketDataStatusView(APIView):
 
         source = candle_data_source(candles)
         latest = candles[-1] if candles else None
+        quality = market_data_quality_report(candles, timeframe) if candles else None
         return Response({
             "available": bool(latest),
             "symbol": symbol.upper(),
@@ -149,6 +150,7 @@ class MarketDataStatusView(APIView):
             "isRealData": source in {"mt5", "alpaca"},
             "latestBarTime": latest.get("time") if latest else None,
             "checkedAt": timezone.now().isoformat(),
+            "quality": quality,
         })
 
 
