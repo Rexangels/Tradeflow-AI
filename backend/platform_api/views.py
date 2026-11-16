@@ -280,7 +280,7 @@ class BacktestsView(APIView):
             quantity=1,
             metadata={"symbol": run.symbol, "timeframe": run.timeframe},
         )
-        run = BacktestRun.objects.select_related("agent").prefetch_related("trades").get(id=run.id)
+        run = BacktestRun.objects.select_related("agent", "snapshot").prefetch_related("trades").get(id=run.id)
         return Response(serialize_backtest(run), status=201)
 
 
