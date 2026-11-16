@@ -30,6 +30,20 @@ The classifier has no execution permission. Regime labels are not buy/sell/hold 
 
 Classifier version `1.0.0`, API integration and UI passed GitHub Actions on code commit `dad0d78807fa17f92eddd3751a874dc83e7436ab`: 121 Django tests, frontend type-check, all frontend tests and production build passed. This verifies implementation behavior and test fixtures only; it does not establish that the regime rules predict profitable trades or generalize across markets.
 
+## Human-label evaluation workflow
+
+The offline evaluator is available as:
+
+```bash
+python manage.py evaluate_market_regimes docs/regime_labels.csv --output reports/regime-evaluation.json
+```
+
+The CSV template at `docs/regime_labels_template.csv` contains the required header but intentionally contains no sample or generated labels. Fill it only after a reviewer has independently assigned the actual market regime for each symbol/timeframe/timestamp and the classifier output for that same completed bar has been recorded.
+
+Required columns are `timestamp`, `symbol`, `timeframe`, `actual_regime`, `predicted_regime`, `classifier_version`, `feature_set_version`, and `label_source`. Use timezone-aware ISO-8601 timestamps, one row per unique symbol/timeframe/timestamp, and set `label_source` to `human_reviewed` only after a human has reviewed the actual label. The evaluator rejects generated labels as ground truth, duplicates, unsupported labels, missing versions, mixed classifier/feature versions, and naive timestamps.
+
+The JSON report includes a confusion matrix, per-class precision/recall/F1, support, accuracy, macro-F1 and balanced accuracy. It evaluates classification agreement only. These metrics do not establish a trading edge, profitability, or future generalization. Use a separate chronologically held-out sample for out-of-sample evaluation; do not tune classifier thresholds against the same rows used to report final metrics.
+
 ## Validation still required
 
 Before regime labels are used to gate strategy candidates, TradeFlow needs a time-aligned, independently reviewed labelled dataset, inter-annotator agreement where labels are subjective, per-class precision/recall, confusion matrices, stability tests across symbols/timeframes/providers, and out-of-sample/walk-forward evaluation. Threshold changes require a classifier version change and re-evaluation. No ML classifier should replace this baseline until its performance and calibration are shown to improve out of sample.
