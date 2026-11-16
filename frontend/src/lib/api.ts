@@ -478,6 +478,7 @@ export interface MarketDataFeatureResponse {
   warmupBars: number;
   ready: boolean;
   abstainReason: string | null;
+  featureDefinitions: Record<string, string>;
   latest: MarketFeatureValues;
   series: MarketFeatureSeriesRow[];
 }
