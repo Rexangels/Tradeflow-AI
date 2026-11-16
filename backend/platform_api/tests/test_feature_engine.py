@@ -41,7 +41,7 @@ class FeatureEngineTests(SimpleTestCase):
         self.assertEqual(result["latest"]["ema200"], 119.9)
         self.assertEqual(result["latest"]["atr14"], 1.0)
         self.assertAlmostEqual(result["latest"]["rsi14"], 100.0)
-        self.assertAlmostEqual(result["latest"]["return1Pct"], (0.2 / 139.8) * 100.0)
+        self.assertAlmostEqual(result["latest"]["return1Pct"], (0.2 / 139.6) * 100.0)
         self.assertEqual(result["source"], "fixture")
 
     def test_insufficient_history_is_an_explicit_abstention(self):
