@@ -300,7 +300,6 @@ class BacktestsView(APIView):
                 **result["validation"],
                 "walkForward": result["walkForward"],
                 "modelAnalysis": result["modelAnalysis"],
-                "strategyContract": result.get("strategyContract"),
             },
             equity_curve=result["equityCurve"],
         )
