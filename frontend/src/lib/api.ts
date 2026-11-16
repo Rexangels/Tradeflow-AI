@@ -467,6 +467,38 @@ export interface MarketFeatureSeriesRow {
   features: MarketFeatureValues;
 }
 
+export interface MarketRegimeSeriesRow {
+  index: number;
+  time: string;
+  regime: "UPTREND" | "DOWNTREND" | "RANGE" | "HIGH_VOLATILITY" | "UNCERTAIN";
+  trendBias: "UPTREND" | "DOWNTREND" | "RANGE" | "UNCERTAIN";
+  classificationReady: boolean;
+  reason: string;
+  volatility20Pct: number | null;
+  highVolatilityThreshold: number | null;
+  volatilityPercentileVsHistory: number | null;
+  volatilityReferenceSamples: number;
+  liquidityStatus: "not_assessed";
+  executionAuthority: "none";
+}
+
+export interface MarketRegimeResponse {
+  classifierVersion: string;
+  featureSetVersion: string | null;
+  symbol: string;
+  timeframe: string;
+  asOf: string;
+  barCount: number;
+  ready: boolean;
+  regime: MarketRegimeSeriesRow["regime"];
+  trendBias: MarketRegimeSeriesRow["trendBias"];
+  reason: string;
+  liquidityStatus: "not_assessed";
+  executionAuthority: "none";
+  thresholds: Record<string, number | string>;
+  series: MarketRegimeSeriesRow[];
+}
+
 export interface MarketDataFeatureResponse {
   featureSetVersion: string;
   symbol: string;
@@ -479,6 +511,7 @@ export interface MarketDataFeatureResponse {
   ready: boolean;
   abstainReason: string | null;
   featureDefinitions: Record<string, string>;
+  regime: MarketRegimeResponse;
   latest: MarketFeatureValues;
   series: MarketFeatureSeriesRow[];
 }
