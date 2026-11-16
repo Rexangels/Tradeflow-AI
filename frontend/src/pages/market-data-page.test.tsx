@@ -65,6 +65,7 @@ describe("MarketDataPage", () => {
                 volumeZScore20: 1.25,
                 candleRangePct: 0.13,
                 candleBodyPct: 0.05,
+                signedCandleBodyPct: 0.05,
                 closeLocation: 0.7,
                 spreadPips: null,
                 spreadCostPct: null,
