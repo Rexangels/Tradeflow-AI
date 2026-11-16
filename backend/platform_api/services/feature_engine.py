@@ -118,7 +118,7 @@ def _rolling_mean_std(values, period, start_index=0):
 
 
 def _safe_ratio(numerator, denominator):
-    if denominator is None or denominator == 0:
+    if numerator is None or denominator is None or denominator == 0:
         return None
     return (numerator / denominator) * 100.0
 
