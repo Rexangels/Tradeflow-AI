@@ -57,6 +57,10 @@ For each candle, the engine computes close-to-close returns over 1/3/6/12 bars; 
 
 All rolling features are causal and include only the current and prior candles. Warm-up values are null. The full feature set remains `ready=false` with `abstainReason=insufficient_history` until 200 bars are available for EMA200 and all required latest values exist. This is a data-readiness flag only; it is not an entry signal, profitability claim or strategy approval. The engine returns its version and formula/causality definitions alongside the feature series.
 
+## Market regime classification
+
+The feature endpoint also returns rule-based regime labels from `platform_api.services.regime_classifier` v1.0.0. It uses EMA/ATR relationships for trend and range labels and a 90th-percentile volatility comparison against the preceding 100 valid observations (minimum 50). It classifies each bar causally and reports its rule thresholds and reason. `UNCERTAIN` remains an explicit label. Liquidity stays `not_assessed` until reliable instrument-aware spread/depth evidence exists, and the response always sets `executionAuthority=none`. See [MARKET_REGIME_CLASSIFICATION.md](MARKET_REGIME_CLASSIFICATION.md) for the rule contract and evaluation gates. These labels are a research baseline, not validated entry signals.
+
 ## Acceptance tests
 
 - Valid chronological OHLCV data passes.
