@@ -1,4 +1,5 @@
 import {
+  Activity,
   LogOut,
   Radar,
   Settings,
@@ -16,6 +17,7 @@ import { useWorkspaceStore } from "../../stores/workspace-store";
 const navItems = [
   { to: "/", label: "Dashboard", icon: Radar },
   { to: "/backtests", label: "Backtesting Lab", icon: TestTube2 },
+  { to: "/market-data", label: "Market Data", icon: Activity },
   { to: "/settings", label: "Risk & Settings", icon: Settings },
 ];
 
