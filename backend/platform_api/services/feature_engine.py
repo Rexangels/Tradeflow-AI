@@ -78,9 +78,9 @@ def _wilder_rsi(closes, period=14):
     return output
 
 
-def _true_ranges(candles, highs, lows, closes):
+def _true_ranges(highs, lows, closes):
     output = []
-    for index in range(len(candles)):
+    for index in range(len(highs)):
         if index == 0:
             output.append(highs[index] - lows[index])
         else:
@@ -156,7 +156,7 @@ def build_feature_series(
     ema50 = _ema(closes, 50)
     ema200 = _ema(closes, 200)
     rsi14 = _wilder_rsi(closes, 14)
-    true_ranges = _true_ranges(candles, highs, lows, closes)
+    true_ranges = _true_ranges(highs, lows, closes)
     atr14 = _wilder_atr(true_ranges, 14)
     volume_mean20, volume_std20 = _rolling_mean_std(volumes, 20)
     close_mean20, close_std20 = _rolling_mean_std(closes, 20)
@@ -168,7 +168,7 @@ def build_feature_series(
         ]
         for period in RETURN_PERIODS
     }
-    return_means, return_stds = _rolling_mean_std(return_series[1], 20, start_index=1)
+    _, return_stds = _rolling_mean_std(return_series[1], 20, start_index=1)
 
     rows = []
     for index, candle in enumerate(candles):
@@ -212,6 +212,7 @@ def build_feature_series(
             ),
             "candleRangePct": ((highs[index] - lows[index]) / current_close) * 100.0,
             "candleBodyPct": (abs(current_close - opens[index]) / opens[index]) * 100.0,
+            "signedCandleBodyPct": ((current_close - opens[index]) / opens[index]) * 100.0,
             "closeLocation": (
                 (current_close - lows[index]) / (highs[index] - lows[index])
                 if highs[index] > lows[index]
@@ -241,6 +242,16 @@ def build_feature_series(
     )
     return {
         "featureSetVersion": FEATURE_SET_VERSION,
+        "featureDefinitions": {
+            "ema": "SMA-seeded exponential moving average",
+            "rsi14": "Wilder RSI, seeded from the first 14 close-to-close changes",
+            "atr14": "Wilder ATR, seeded from the first 14 true ranges",
+            "volatility20Pct": "Population standard deviation of the latest 20 one-bar percentage returns",
+            "bollingerWidth20Pct": "Four population standard deviations divided by the 20-bar mean, expressed as percent",
+            "volumeZScore20": "Population z-score of current volume against the trailing 20 bars, including the current bar",
+            "spreadCostPct": "Explicit quoted spread in price units divided by close, expressed as percent; null unless spread and pip size are supplied",
+            "causality": "Every feature row uses only that row and earlier candles",
+        },
         "symbol": symbol,
         "timeframe": timeframe,
         "source": validation["source"],
