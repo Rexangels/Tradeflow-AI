@@ -233,6 +233,8 @@ export const api = {
     }),
   getCandles: (symbol: string, timeframe: string, limit = 300, forceRefresh = false) =>
     request<Candle[]>(`/market-data/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&forceRefresh=${forceRefresh}`),
+  getMarketDataFeatures: (symbol: string, timeframe: string, limit = 500) =>
+    request<MarketDataFeatureResponse>(`/market-data/features?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`),
   getMarketDataStatus: (symbol: string, timeframe: string) =>
     request<MarketDataStatusResponse>(`/market-data/status?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`),
   getMarketDataSnapshots: (symbol: string, timeframe: string, limit = 5) =>
@@ -432,6 +434,51 @@ export interface MarketDataQualityDiagnostics {
   gap_count: number;
   missing_intervals_estimate: number;
   gap_policy: string;
+}
+
+export interface MarketFeatureValues {
+  return1Pct: number | null;
+  return3Pct: number | null;
+  return6Pct: number | null;
+  return12Pct: number | null;
+  ema20: number | null;
+  ema50: number | null;
+  ema200: number | null;
+  ema20Vs50Pct: number | null;
+  ema50Vs200Pct: number | null;
+  closeVsEma200Pct: number | null;
+  rsi14: number | null;
+  atr14: number | null;
+  atrPct: number | null;
+  volatility20Pct: number | null;
+  bollingerWidth20Pct: number | null;
+  volumeZScore20: number | null;
+  candleRangePct: number;
+  candleBodyPct: number;
+  closeLocation: number | null;
+  spreadPips: number | null;
+  spreadCostPct: number | null;
+}
+
+export interface MarketFeatureSeriesRow {
+  index: number;
+  time: string;
+  features: MarketFeatureValues;
+}
+
+export interface MarketDataFeatureResponse {
+  featureSetVersion: string;
+  symbol: string;
+  timeframe: string;
+  source: string;
+  asOf: string;
+  barCount: number;
+  requiredBars: number;
+  warmupBars: number;
+  ready: boolean;
+  abstainReason: string | null;
+  latest: MarketFeatureValues;
+  series: MarketFeatureSeriesRow[];
 }
 
 export interface MarketDataSnapshotSummary {
