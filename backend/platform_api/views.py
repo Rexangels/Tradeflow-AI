@@ -18,12 +18,14 @@ from .serializers import (
     BacktestRequestSerializer,
     LoginSerializer,
     MarketDataQuerySerializer,
+    MarketDataFeaturesQuerySerializer,
     PaperOrderSerializer,
 )
 from .services.ai_orchestrator import handle_chat
 from .services.backtests import run_backtest, trade_timestamp
 from .services.market_data import candle_data_source, get_candles, latest_price, market_data_quality_report, normalize_symbol
 from .services.market_data_snapshots import create_market_data_snapshot
+from .services.feature_engine import build_feature_series
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -117,6 +119,34 @@ class MarketDataCandlesView(APIView):
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         return Response(candles)
+
+
+class MarketDataFeaturesView(APIView):
+    """Return deterministic, versioned, causal features for historical candles."""
+
+    permission_classes = [IsTradeflowAdmin]
+
+    def get(self, request):
+        serializer = MarketDataFeaturesQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+        try:
+            candles = get_candles(
+                payload["symbol"],
+                payload["timeframe"],
+                limit=payload["limit"],
+                force_refresh=payload["forceRefresh"],
+            )
+            features = build_feature_series(
+                candles,
+                symbol=normalize_symbol(payload["symbol"]),
+                timeframe=payload["timeframe"],
+                spread_pips=payload.get("spreadPips"),
+                pip_size=payload.get("pipSize"),
+            )
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        return Response(features)
 
 
 class MarketDataStatusView(APIView):
