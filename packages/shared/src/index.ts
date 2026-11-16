@@ -276,11 +276,28 @@ export const marketDataSnapshotSummarySchema = z.object({
 });
 export type MarketDataSnapshotSummary = z.infer<typeof marketDataSnapshotSummarySchema>;
 
+export const strategyContractSchema = z.object({
+  engine: z.string(),
+  strategies: z.array(z.object({
+    id: z.string(),
+    version: z.string(),
+    implementationStatus: z.string(),
+    requiredFeatures: z.array(z.string()),
+    eligibleRegimes: z.array(z.string()),
+    minimumBars: z.number().int(),
+    regimePolicy: z.string(),
+    executionAuthority: z.literal("none"),
+  })),
+  executionAuthority: z.literal("none"),
+});
+export type StrategyContract = z.infer<typeof strategyContractSchema>;
+
 export const backtestResultSchema = z.object({
   id: z.string(),
   symbol: z.string(),
   timeframe: timeframeSchema,
   dataSnapshot: marketDataSnapshotSummarySchema.nullable().optional(),
+  strategyContract: strategyContractSchema.nullable().optional(),
   agent: agentConfigSchema,
   settings: backtestSettingsSchema,
   metrics: backtestMetricsSchema,
