@@ -26,6 +26,7 @@ from .services.backtests import run_backtest, trade_timestamp
 from .services.market_data import candle_data_source, get_candles, latest_price, market_data_quality_report, normalize_symbol
 from .services.market_data_snapshots import create_market_data_snapshot
 from .services.feature_engine import build_feature_series
+from .services.regime_classifier import classify_regime_series
 from .services.paper_trading import account_snapshot, get_risk_policy, place_order, session_snapshot, system_status
 
 
@@ -146,6 +147,7 @@ class MarketDataFeaturesView(APIView):
             )
         except ValueError as exc:
             raise ValidationError({"detail": str(exc)}) from exc
+        features["regime"] = classify_regime_series(features)
         return Response(features)
 
 
